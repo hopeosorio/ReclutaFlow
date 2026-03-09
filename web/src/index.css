@@ -1,0 +1,262 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@400;700;900&display=swap');
+
+:root {
+  /* Carbon Matte Palette */
+  --bg-pure: #000000;
+  --bg-soft: #050505;
+  --bg-accent: #111111;
+
+  --primary: #ffffff;
+  --primary-muted: rgba(255, 255, 255, 0.6);
+  --accent: #3d5afe;
+  --accent-glow: rgba(61, 90, 254, 0.3);
+
+  --text-main: #ffffff;
+  --text-dim: rgba(255, 255, 255, 0.5);
+  --text-dark: #333333;
+
+  /* Precision UI */
+  --glass: rgba(255, 255, 255, 0.03);
+  --border-light: rgba(255, 255, 255, 0.08);
+  --border-dim: rgba(255, 255, 255, 0.04);
+
+  --radius-pro: 16px;
+  --radius-pill: 100px;
+
+  /* Elite Motion */
+  --ease-expo: cubic-bezier(0.19, 1, 0.22, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  background: var(--bg-pure);
+  color: var(--text-main);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  min-height: 100vh;
+  overflow-x: hidden;
+  background-color: var(--bg-pure);
+  background-image:
+    radial-gradient(circle at top right, rgba(61, 90, 254, 0.08) 0%, transparent 40%),
+    radial-gradient(circle at bottom left, rgba(61, 90, 254, 0.05) 0%, transparent 40%);
+}
+
+/* Noise Texture Overlay */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+  opacity: 0.04;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* Typography - MUSEUM QUALITY */
+h1 {
+  font-family: 'Outfit', sans-serif;
+  font-size: clamp(4rem, 15vw, 10rem);
+  font-weight: 900;
+  line-height: 0.85;
+  letter-spacing: -0.06em;
+  text-transform: uppercase;
+}
+
+h2 {
+  font-family: 'Outfit', sans-serif;
+  font-size: clamp(2rem, 8vw, 4rem);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+
+.mono {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 2rem;
+  display: block;
+}
+
+/* Hero Mask Reveal Animation */
+.reveal {
+  opacity: 0;
+  transform: translateY(40px);
+  animation: revealUp 1.2s var(--ease-expo) forwards;
+}
+
+@keyframes revealUp {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Elite Glass Card */
+.pro-card {
+  background: var(--bg-soft);
+  border: 1px solid var(--border-dim);
+  border-radius: var(--radius-pro);
+  padding: 4rem;
+  transition: all 0.5s var(--ease-expo);
+  position: relative;
+  overflow: hidden;
+}
+
+.pro-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border-light), transparent);
+}
+
+.pro-card:hover {
+  border-color: var(--border-light);
+  background: var(--bg-accent);
+  transform: translateY(-5px);
+}
+
+/* Magnetic Button Utility (Visual) */
+.btn-magnetic {
+  background: var(--primary);
+  color: var(--bg-pure);
+  padding: 1.5rem 3.5rem;
+  border-radius: var(--radius-pill);
+  font-weight: 800;
+  font-size: 1.1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border: none;
+  cursor: pointer;
+  transition: all 0.4s var(--ease-expo);
+  display: inline-flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.btn-magnetic:hover {
+  letter-spacing: 0.15em;
+  transform: scale(1.02);
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Floating Navigation - ULTRA MINIMAL */
+.nav-pixel {
+  position: fixed;
+  top: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  gap: 1rem;
+  padding: 0.5rem;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(20px);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-dim);
+}
+
+.nav-pixel a {
+  padding: 0.8rem 1.5rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-decoration: none;
+  color: var(--text-dim);
+  transition: color 0.3s ease;
+}
+
+.nav-pixel a.active,
+.nav-pixel a:hover {
+  color: var(--text-main);
+}
+
+/* Bento Grid System */
+.bento {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 1rem;
+  margin: 10rem 0;
+}
+
+.bento-item {
+  grid-column: span 6;
+  background: var(--bg-soft);
+  border: 1px solid var(--border-dim);
+  border-radius: var(--radius-pro);
+  padding: 3rem;
+  min-height: 400px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+/* Custom Cursor (Optional but Premium) */
+.custom-cursor {
+  position: fixed;
+  width: 20px;
+  height: 20px;
+  background: var(--accent);
+  mix-blend-mode: difference;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 9999;
+  transition: transform 0.15s ease-out;
+}
+
+/* Helpers */
+.container-full {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 0 4rem;
+}
+
+.v-text {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  position: absolute;
+  right: -4rem;
+  top: 0;
+  color: var(--text-dark);
+  font-size: 5rem;
+  font-weight: 900;
+  opacity: 0.1;
+}
+
+/* Form Styles for Premium Look */
+.glass-input {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid var(--border-dim);
+  padding: 2rem 0;
+  font-size: 1.5rem;
+  color: #fff;
+  width: 100%;
+  transition: border-color 0.4s ease;
+}
+
+.glass-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+@media (max-width: 768px) {
+  .container-full {
+    padding: 0 2rem;
+  }
+
+  .bento-item {
+    grid-column: span 12;
+  }
+}

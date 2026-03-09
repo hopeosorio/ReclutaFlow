@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+web/node_modules/
+
+# Environment variables (Sensitive)
+.env
+.env.local
+web/.env
+web/.env.local
+
+# IDEs
+.vscode/
+
+# Build outputs
+dist/
+build/
+web/dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Supabase
+supabase/.temp/
