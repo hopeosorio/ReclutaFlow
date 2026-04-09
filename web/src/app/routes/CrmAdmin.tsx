@@ -1,10 +1,12 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
+import { Link } from "react-router-dom";
+import ReactQuill from "react-quill-new";
+import "react-quill-new/dist/quill.snow.css";
 import { useAuth } from "@/app/AuthProvider";
 import { useAppToast } from "@/app/layouts/CrmLayout";
-import LoadingScreen from "@/components/LoadingScreen";
 import { formatDateTime } from "@/lib/format";
-import { supabase } from "@/lib/supabaseClient";
+import { supabase, supabaseUrl, supabaseAnonKey } from "@/lib/supabaseClient";
 
 interface JobPostingRow {
   id: string;
@@ -45,8 +47,10 @@ interface ScreeningQuestionRow {
 interface DocumentTypeRow {
   id: string;
   name: string;
+  label: string;
   stage: "application" | "post_interview" | "onboarding";
   is_required: boolean;
+  is_active: boolean;
 }
 
 interface TemplateRow {
@@ -115,12 +119,34 @@ interface PreviewApplicationRow {
   } | null;
 }
 
+interface OnboardingHostRow {
+  id: string;
+  full_name: string;
+  email: string;
+  phone: string | null;
+  is_active: boolean;
+}
+
+interface HiredApplicationRow {
+  id: string;
+  updated_at: string;
+  traffic_light: "red" | "yellow" | "green" | null;
+  recruit_candidates: {
+    person_id: string;
+    recruit_persons: { id: string; first_name: string; last_name: string; email: string | null; phone: string | null; } | null;
+  } | null;
+  recruit_job_postings: { title: string; branch: string | null; } | null;
+  rehire_flag?: { color: "red" | "yellow" | "green"; reason: string; set_at: string; } | null;
+}
+
 const tabs = [
   { id: "vacantes", label: "Vacantes" },
   { id: "preguntas", label: "Preguntas" },
   { id: "documentos", label: "Documentos" },
   { id: "plantillas", label: "Plantillas" },
   { id: "usuarios", label: "Usuarios" },
+  { id: "anfitriones", label: "Anfitriones" },
+  { id: "contratados", label: "Contratados" },
   { id: "estatus", label: "Estatus" },
   { id: "metricas", label: "Métricas" },
 ];
@@ -161,6 +187,8 @@ const templateVariablePattern = /\{([a-zA-Z0-9_]+)\}/g;
 const renderTemplatePreview = (template: string, variables: Record<string, string>) =>
   template.replace(templateVariablePattern, (match, key) => variables[key] ?? match);
 
+const isHtmlContent = (str: string) => /<[a-z][\s\S]*>/i.test(str);
+
 const extractTemplateVariables = (subject: string, body: string) => {
   const matches = new Set<string>();
   const scan = (value: string) => {
@@ -171,35 +199,6 @@ const extractTemplateVariables = (subject: string, body: string) => {
   scan(subject);
   scan(body);
   return Array.from(matches);
-};
-
-const formatPreviewDate = (value?: string | null) => {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat("es-MX", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: "America/Mexico_City" }).format(date);
-};
-
-const formatPreviewTime = (value?: string | null) => {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat("es-MX", { hour: "2-digit", minute: "2-digit", timeZone: "America/Mexico_City" }).format(date);
-};
-
-type CaretInput = HTMLInputElement | HTMLTextAreaElement | null;
-
-const insertTokenAtCaret = (value: string, token: string, input: CaretInput) => {
-  if (!input || input.selectionStart === null || input.selectionEnd === null) {
-    const nextValue = `${value}${token}`;
-    return { nextValue, cursor: nextValue.length };
-  }
-  const start = input.selectionStart;
-  const end = input.selectionEnd;
-  return {
-    nextValue: `${value.slice(0, start)}${token}${value.slice(end)}`,
-    cursor: start + token.length,
-  };
 };
 
 const buildTransitionKey = (transition: StatusTransitionRow) =>
@@ -261,10 +260,12 @@ export default function CrmAdmin() {
 
   const [docForm, setDocForm] = useState({
     name: "",
+    label: "",
     stage: "application",
     is_required: false,
+    is_active: true,
   });
-  const [docEdits, setDocEdits] = useState<Record<string, { stage: DocumentTypeRow["stage"]; is_required: boolean }>>({});
+  const [docEdits, setDocEdits] = useState<Record<string, { label: string; stage: DocumentTypeRow["stage"]; is_required: boolean; is_active: boolean }>>({});
   const [docError, setDocError] = useState<string | null>(null);
 
   const [templateForm, setTemplateForm] = useState({
@@ -275,9 +276,7 @@ export default function CrmAdmin() {
   const [templateEdits, setTemplateEdits] = useState<Record<string, { subject: string; body_md: string; is_active: boolean }>>({});
   const [templateError, setTemplateError] = useState<string | null>(null);
 
-  const [templateFocus, setTemplateFocus] = useState<{ id: string; field: "subject" | "body" } | null>(null);
   const templateSubjectRefs = useRef<Record<string, HTMLInputElement | null>>({});
-  const templateBodyRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
 
   const [variableForm, setVariableForm] = useState({
     variable_key: "",
@@ -300,13 +299,27 @@ export default function CrmAdmin() {
   });
   const [transitionEdits, setTransitionEdits] = useState<Record<string, { is_active: boolean; template_key: string | null }>>({});
   const [transitionError, setTransitionError] = useState<string | null>(null);
+  const [statusEdits, setStatusEdits] = useState<Record<string, { label: string; requires_reason: boolean; is_active: boolean; sort_order: number }>>({});
+  const [statusError, setStatusError] = useState<string | null>(null);
 
   const [roleEdits, setRoleEdits] = useState<Record<string, ProfileRow["role"]>>({});
   const [roleError, setRoleError] = useState<string | null>(null);
 
+  const [hosts, setHosts] = useState<OnboardingHostRow[]>([]);
+  const [hostForm, setHostForm] = useState({ full_name: "", email: "", phone: "" });
+  const [hostSaving, setHostSaving] = useState(false);
+  const [hostError, setHostError] = useState<string | null>(null);
+
+  const [hiredApps, setHiredApps] = useState<HiredApplicationRow[]>([]);
+  const [hiredSearch, setHiredSearch] = useState("");
+  const [descontratarId, setDescontratarId] = useState<string | null>(null);
+  const [descontratarForm, setDescontratarForm] = useState({ color: "green" as "red" | "yellow" | "green", reason: "" });
+  const [descontratarSaving, setDescontratarSaving] = useState(false);
+  const [descontratarError, setDescontratarError] = useState<string | null>(null);
+
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [metricsError, setMetricsError] = useState<string | null>(null);
-  const [metricSummary, setMetricSummary] = useState({ statusChanged: 0, emailSent: 0, emailFailed: 0 });
+  const [metricSummary, setMetricSummary] = useState<{ statusChanged: number; emailSent: number; emailFailed: number; statusBreakdown: unknown[] }>({ statusChanged: 0, emailSent: 0, emailFailed: 0, statusBreakdown: [] });
   const [metricEvents, setMetricEvents] = useState<EventLogRow[]>([]);
 
   const [previewMode, setPreviewMode] = useState<"catalog" | "application">("catalog");
@@ -317,6 +330,12 @@ export default function CrmAdmin() {
   const [previewDetailsLoading, setPreviewDetailsLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewLoaded, setPreviewLoaded] = useState(false);
+
+  // ── Plantillas: estado de expansión, form nuevo y email de prueba ────────
+  const [expandedTemplates, setExpandedTemplates] = useState<Set<string>>(new Set());
+  const [showNewTemplate, setShowNewTemplate] = useState(false);
+  const [testEmailMap, setTestEmailMap] = useState<Record<string, string>>({});
+  const [sendingTestEmail, setSendingTestEmail] = useState<Record<string, boolean>>({});
 
   const isAdmin = profile?.role === "rh_admin";
   const statusLabelMap = useMemo(() => {
@@ -384,6 +403,9 @@ export default function CrmAdmin() {
       profilesRes,
       statusesRes,
       transitionsRes,
+      hostsRes,
+      hiredRes,
+      rehireFlagsRes,
     ] = await Promise.all([
       supabase
         .from("recruit_job_postings")
@@ -396,8 +418,8 @@ export default function CrmAdmin() {
         ),
       supabase
         .from("recruit_document_types")
-        .select("id, name, stage, is_required")
-        .order("name"),
+        .select("id, name, label, stage, is_required, is_active")
+        .order("label"),
       supabase
         .from("recruit_message_templates")
         .select("id, template_key, subject, body_md, is_active")
@@ -419,6 +441,19 @@ export default function CrmAdmin() {
         .select("from_status_key, to_status_key, is_active, template_key")
         .order("from_status_key")
         .order("to_status_key"),
+      supabase
+        .from("recruit_onboarding_hosts")
+        .select("id, full_name, email, phone, is_active")
+        .order("full_name"),
+      supabase
+        .from("recruit_applications")
+        .select("id, updated_at, traffic_light, recruit_candidates(person_id, recruit_persons(id, first_name, last_name, email, phone)), recruit_job_postings(title, branch)")
+        .eq("status_key", "hired")
+        .order("updated_at", { ascending: false }),
+      supabase
+        .from("recruit_rehire_flags")
+        .select("person_id, color, reason, set_at")
+        .order("set_at", { ascending: false }),
     ]);
 
     if (jobsRes.error) setError(jobsRes.error.message);
@@ -429,6 +464,8 @@ export default function CrmAdmin() {
     if (profilesRes.error) setError(profilesRes.error.message);
     if (statusesRes.error) setError(statusesRes.error.message);
     if (transitionsRes.error) setError(transitionsRes.error.message);
+    if (hostsRes.error) setError(hostsRes.error.message);
+    if (hiredRes.error) setError(hiredRes.error.message);
 
     setJobs((jobsRes.data as JobPostingRow[]) ?? []);
     setJobProfiles((jobProfilesRes.data as JobProfileRow[]) ?? []);
@@ -438,6 +475,20 @@ export default function CrmAdmin() {
     setProfiles((profilesRes.data as ProfileRow[]) ?? []);
     setStatuses((statusesRes.data as StatusRow[]) ?? []);
     setTransitions((transitionsRes.data as StatusTransitionRow[]) ?? []);
+    setHosts((hostsRes.data as OnboardingHostRow[]) ?? []);
+    const flagsByPerson: Record<string, any> = {};
+    for (const f of (rehireFlagsRes.data ?? [])) {
+      if (!flagsByPerson[f.person_id]) flagsByPerson[f.person_id] = f;
+    }
+    const hired = ((hiredRes.data ?? []) as any[]).map(app => ({
+      ...app,
+      recruit_candidates: Array.isArray(app.recruit_candidates) ? app.recruit_candidates[0] : app.recruit_candidates,
+      recruit_job_postings: Array.isArray(app.recruit_job_postings) ? app.recruit_job_postings[0] : app.recruit_job_postings,
+      rehire_flag: flagsByPerson[
+        (Array.isArray(app.recruit_candidates) ? app.recruit_candidates[0] : app.recruit_candidates)?.person_id
+      ] ?? null,
+    }));
+    setHiredApps(hired as HiredApplicationRow[]);
     setTransitionEdits({});
 
     setLoading(false);
@@ -448,35 +499,23 @@ export default function CrmAdmin() {
     setMetricsLoading(true);
     setMetricsError(null);
 
-    const { data, error: metricsLoadError } = await supabase
-      .from("recruit_event_logs")
-      .select(
-        "id, event_key, entity_type, entity_id, application_id, template_id, metadata, created_at, profiles:created_by(full_name), recruit_message_templates(template_key, subject)",
-      )
-      .order("created_at", { ascending: false })
-      .limit(30);
+    const { data, error: metricsLoadError } = await supabase.functions.invoke("get_crm_metrics");
 
-    if (metricsLoadError) {
-      setMetricsError(metricsLoadError.message);
+    if (metricsLoadError || data?.error) {
+      setMetricsError(metricsLoadError?.message || data?.error || "Error al cargar métricas.");
       setMetricEvents([]);
-      setMetricSummary({ statusChanged: 0, emailSent: 0, emailFailed: 0 });
-      setMetricsLoading(false);
-      return;
+      setMetricSummary({ statusChanged: 0, emailSent: 0, emailFailed: 0, statusBreakdown: [] });
+    } else {
+      const summary = data?.summary || {};
+      setMetricEvents(data?.recent_events || []);
+      setMetricSummary({
+        statusChanged: summary.total_applications || 0,
+        emailSent: summary.emails_sent || 0,
+        emailFailed: summary.emails_failed || 0,
+        statusBreakdown: summary.status_breakdown || [], // Guardamos el desglose estratégico
+      });
     }
 
-    const events = (data as unknown as EventLogRow[]) ?? [];
-    const summary = events.reduce(
-      (acc, event) => {
-        if (event.event_key === "status_changed") acc.statusChanged += 1;
-        if (event.event_key === "email_sent") acc.emailSent += 1;
-        if (event.event_key === "email_failed") acc.emailFailed += 1;
-        return acc;
-      },
-      { statusChanged: 0, emailSent: 0, emailFailed: 0 },
-    );
-
-    setMetricEvents(events);
-    setMetricSummary(summary);
     setMetricsLoading(false);
   };
 
@@ -509,61 +548,16 @@ export default function CrmAdmin() {
     setPreviewDetailsLoading(true);
     setPreviewError(null);
 
-    const { data: application, error: applicationError } = await supabase
-      .from("recruit_applications")
-      .select(
-        "id, assigned_to, job_posting_id, recruit_job_postings(title, branch), recruit_candidates(recruit_persons(first_name, last_name, email))",
-      )
-      .eq("id", applicationId)
-      .single();
-
-    if (applicationError || !application) {
-      setPreviewError(applicationError?.message ?? "No se pudo cargar la solicitud.");
-      setPreviewData({});
-      setPreviewDetailsLoading(false);
-      return;
-    }
-
-    const person = (application.recruit_candidates as any)?.recruit_persons;
-    const name = `${person?.first_name ?? ""} ${person?.last_name ?? ""}`.trim();
-    const jobTitle = (application.recruit_job_postings as any)?.title ?? "";
-    const jobBranch = (application.recruit_job_postings as any)?.branch ?? "";
-    let recruiterName = "";
-
-    if (application.assigned_to) {
-      const { data: recruiter } = await supabase
-        .from("profiles")
-        .select("full_name")
-        .eq("id", application.assigned_to)
-        .maybeSingle();
-      recruiterName = recruiter?.full_name ?? "";
-    }
-
-    const { data: interview } = await supabase
-      .from("recruit_interviews")
-      .select("scheduled_at, location, profiles:interviewer_id(full_name)")
-      .eq("application_id", applicationId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    const scheduleDate = formatPreviewDate(interview?.scheduled_at ?? null);
-    const scheduleTime = formatPreviewTime(interview?.scheduled_at ?? null);
-    const location = interview?.location ?? "";
-    const interviewerName = (interview?.profiles as any)?.full_name ?? "";
-
-    setPreviewData({
-      name,
-      job_title: jobTitle,
-      job_branch: jobBranch,
-      schedule_date: scheduleDate,
-      schedule_time: scheduleTime,
-      location,
-      recruiter_name: recruiterName,
-      interviewer_name: interviewerName,
-      contact_email: person?.email ?? "",
-      datetime: scheduleDate && scheduleTime ? `${scheduleDate} ${scheduleTime}` : scheduleDate || scheduleTime,
+    const { data, error: functionError } = await supabase.functions.invoke("get_application_preview", {
+      body: { application_id: applicationId },
     });
+
+    if (functionError || data?.error) {
+      setPreviewError(functionError?.message || data?.error || "Error al cargar previsualización.");
+      setPreviewData({});
+    } else {
+      setPreviewData(data?.variables || {});
+    }
 
     setPreviewDetailsLoading(false);
   };
@@ -675,9 +669,7 @@ export default function CrmAdmin() {
     );
   }
 
-  if (loading) {
-    return <LoadingScreen label="Cargando panel admin" />;
-  }
+  if (loading) return null;
 
   const handleJobSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -828,15 +820,17 @@ export default function CrmAdmin() {
   const handleDocSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setDocError(null);
-    if (!docForm.name.trim()) {
-      setDocError("El nombre del documento es obligatorio.");
+    if (!docForm.name.trim() || !docForm.label.trim()) {
+      setDocError("El nombre técnico y la etiqueta son obligatorios.");
       return;
     }
 
     const { error: insertError } = await supabase.from("recruit_document_types").insert({
       name: docForm.name.trim(),
+      label: docForm.label.trim(),
       stage: docForm.stage,
       is_required: docForm.is_required,
+      is_active: docForm.is_active,
     });
 
     if (insertError) {
@@ -844,18 +838,24 @@ export default function CrmAdmin() {
       return;
     }
 
-    setDocForm({ name: "", stage: "application", is_required: false });
+    setDocForm({ name: "", label: "", stage: "application", is_required: false, is_active: true });
     toast.success("Tipo de documento agregado");
     await loadAll();
   };
 
   const handleDocSave = async (doc: DocumentTypeRow) => {
     const edit = docEdits[doc.id];
-    if (!edit || (edit.stage === doc.stage && edit.is_required === doc.is_required)) return;
+    if (
+      !edit ||
+      (edit.label === doc.label &&
+        edit.stage === doc.stage &&
+        edit.is_required === doc.is_required &&
+        edit.is_active === doc.is_active)
+    ) return;
 
     const { error: updateError } = await supabase
       .from("recruit_document_types")
-      .update({ stage: edit.stage, is_required: edit.is_required })
+      .update({ label: edit.label, stage: edit.stage, is_required: edit.is_required, is_active: edit.is_active })
       .eq("id", doc.id);
 
     if (updateError) {
@@ -876,6 +876,13 @@ export default function CrmAdmin() {
     }
     if (transitionForm.from_status_key === transitionForm.to_status_key) {
       setTransitionError("El estatus origen y destino deben ser distintos.");
+      return;
+    }
+    const alreadyExists = transitions.some(
+      (t) => t.from_status_key === transitionForm.from_status_key && t.to_status_key === transitionForm.to_status_key,
+    );
+    if (alreadyExists) {
+      setTransitionError("Esa transición ya existe. Edítala directamente en la lista.");
       return;
     }
 
@@ -901,22 +908,25 @@ export default function CrmAdmin() {
 
   const handleTransitionSave = async (transition: StatusTransitionRow) => {
     const key = buildTransitionKey(transition);
-    const edit = transitionEdits[key];
-    if (!edit) return;
-    const templateChanged = edit.template_key !== (transition.template_key ?? null);
-    if (!templateChanged && edit.is_active === transition.is_active) return;
+    const edit = transitionEdits[key] ?? {
+      is_active: transition.is_active,
+      template_key: transition.template_key ?? null,
+    };
+    const templateKey = edit.template_key || null;
 
     const { error: updateError } = await supabase
       .from("recruit_status_transitions")
-      .update({ is_active: edit.is_active, template_key: edit.template_key })
+      .update({ is_active: edit.is_active, template_key: templateKey })
       .eq("from_status_key", transition.from_status_key)
       .eq("to_status_key", transition.to_status_key);
 
     if (updateError) {
       setTransitionError(updateError.message);
+      toast.error(`Error: ${updateError.message}`);
       return;
     }
 
+    toast.success("Transición guardada.");
     await loadAll();
   };
 
@@ -941,26 +951,24 @@ export default function CrmAdmin() {
     );
   };
 
-  const insertTemplateToken = (
-    templateId: string,
-    token: string,
-    fields: { subject: string; body_md: string; is_active?: boolean },
-    update: (next: { subject: string; body_md: string; is_active?: boolean }) => void,
-  ) => {
-    const field = templateFocus?.id === templateId ? templateFocus.field : "body";
-    const input =
-      field === "subject" ? templateSubjectRefs.current[templateId] : templateBodyRefs.current[templateId];
-    const currentValue = field === "subject" ? fields.subject : fields.body_md;
-    const { nextValue, cursor } = insertTokenAtCaret(currentValue, token, input);
-    const nextFields =
-      field === "subject" ? { ...fields, subject: nextValue } : { ...fields, body_md: nextValue };
-    update(nextFields);
-    if (input) {
-      setTimeout(() => {
-        input.focus();
-        input.setSelectionRange(cursor, cursor);
-      }, 0);
-    }
+  const handleStatusSave = async (status: StatusRow) => {
+    setStatusError(null);
+    const edit = statusEdits[status.status_key];
+    if (!edit) return;
+    const { error: updateError } = await supabase
+      .from("recruit_statuses")
+      .update({
+        label: edit.label.trim(),
+        requires_reason: edit.requires_reason,
+        is_active: edit.is_active,
+        sort_order: edit.sort_order,
+      })
+      .eq("status_key", status.status_key);
+    if (updateError) { setStatusError(updateError.message); return; }
+    setStatuses((prev) =>
+      prev.map((s) => s.status_key === status.status_key ? { ...s, ...edit } : s),
+    );
+    toast.success(`Estatus "${edit.label}" actualizado.`);
   };
 
   const handleVariableSubmit = async (event: FormEvent) => {
@@ -1056,6 +1064,46 @@ export default function CrmAdmin() {
     setTemplateVariables((prev) => prev.filter((row) => row.variable_key !== variable.variable_key));
   };
 
+  const handleSendTestEmail = async (template: TemplateRow, toAddress: string) => {
+    if (!toAddress.trim()) {
+      toast.error("Ingresa un correo destino para la prueba.");
+      return;
+    }
+    if (!previewApplicationId) {
+      toast.error("Selecciona una solicitud real en 'Datos para vista previa' antes de enviar la prueba.");
+      return;
+    }
+    setSendingTestEmail((prev) => ({ ...prev, [template.id]: true }));
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      const body: Record<string, unknown> = {
+        template_key: template.template_key,
+        to_address: toAddress.trim(),
+        application_id: previewApplicationId,
+      };
+      const res = await fetch(`${supabaseUrl}/functions/v1/send_email`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          apikey: supabaseAnonKey ?? "",
+        },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        toast.success(`Email de prueba enviado a ${toAddress.trim()}`);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast.error(`Error: ${err.error ?? err.message ?? "No se pudo enviar"}`);
+      }
+    } catch {
+      toast.error("Error al enviar email de prueba.");
+    } finally {
+      setSendingTestEmail((prev) => ({ ...prev, [template.id]: false }));
+    }
+  };
+
   const handleTemplateSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setTemplateError(null);
@@ -1115,6 +1163,50 @@ export default function CrmAdmin() {
       return;
     }
 
+    await loadAll();
+  };
+
+  const handleHostSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setHostError(null);
+    if (!hostForm.full_name.trim() || !hostForm.email.trim()) {
+      setHostError("Nombre y correo son obligatorios.");
+      return;
+    }
+    setHostSaving(true);
+    const { error: insertError } = await supabase
+      .from("recruit_onboarding_hosts")
+      .insert({ full_name: hostForm.full_name.trim(), email: hostForm.email.trim(), phone: hostForm.phone.trim() || null });
+    setHostSaving(false);
+    if (insertError) { setHostError(insertError.message); return; }
+    setHostForm({ full_name: "", email: "", phone: "" });
+    await loadAll();
+  };
+
+  const toggleHostActive = async (host: OnboardingHostRow) => {
+    await supabase.from("recruit_onboarding_hosts").update({ is_active: !host.is_active }).eq("id", host.id);
+    await loadAll();
+  };
+
+  const handleDescontratar = async (e: FormEvent) => {
+    e.preventDefault();
+    setDescontratarError(null);
+    if (!descontratarForm.reason.trim()) {
+      setDescontratarError("El motivo de salida es obligatorio.");
+      return;
+    }
+    const app = hiredApps.find(a => a.id === descontratarId);
+    const personId = app?.recruit_candidates?.person_id;
+    if (!personId) { setDescontratarError("No se encontró el perfil del empleado."); return; }
+    setDescontratarSaving(true);
+    await supabase.from("recruit_rehire_flags").delete().eq("person_id", personId);
+    const { error } = await supabase
+      .from("recruit_rehire_flags")
+      .insert({ person_id: personId, color: descontratarForm.color, reason: descontratarForm.reason.trim(), set_by: profile?.id });
+    setDescontratarSaving(false);
+    if (error) { setDescontratarError(error.message); return; }
+    setDescontratarId(null);
+    setDescontratarForm({ color: "green", reason: "" });
     await loadAll();
   };
 
@@ -1530,13 +1622,31 @@ export default function CrmAdmin() {
           <div className="admin-section">
             <div className="card">
               <h3>Checklist de documentos</h3>
+              <p className="lead">
+                Define qué documentos se solicitan en cada etapa del proceso. Los inactivos no se muestran al candidato ni al reclutador.
+              </p>
               <form className="form-grid" onSubmit={handleDocSubmit}>
                 <label>
-                  Nombre
+                  Etiqueta (nombre visible)
                   <input
                     className="input"
+                    placeholder="Ej: Acta de nacimiento"
+                    value={docForm.label}
+                    onChange={(event) => setDocForm((prev) => ({ ...prev, label: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  Nombre técnico (clave única)
+                  <input
+                    className="input"
+                    placeholder="Ej: acta_nacimiento"
                     value={docForm.name}
-                    onChange={(event) => setDocForm((prev) => ({ ...prev, name: event.target.value }))}
+                    onChange={(event) =>
+                      setDocForm((prev) => ({
+                        ...prev,
+                        name: event.target.value.toLowerCase().replace(/\s+/g, "_"),
+                      }))
+                    }
                   />
                 </label>
                 <label>
@@ -1551,14 +1661,24 @@ export default function CrmAdmin() {
                     <option value="onboarding">Onboarding</option>
                   </select>
                 </label>
-                <label className="checkbox">
-                  <input
-                    type="checkbox"
-                    checked={docForm.is_required}
-                    onChange={(event) => setDocForm((prev) => ({ ...prev, is_required: event.target.checked }))}
-                  />
-                  Obligatorio
-                </label>
+                <div style={{ display: "flex", gap: "1.5rem", alignItems: "center", paddingTop: "1.4rem" }}>
+                  <label className="checkbox">
+                    <input
+                      type="checkbox"
+                      checked={docForm.is_required}
+                      onChange={(event) => setDocForm((prev) => ({ ...prev, is_required: event.target.checked }))}
+                    />
+                    Obligatorio
+                  </label>
+                  <label className="checkbox">
+                    <input
+                      type="checkbox"
+                      checked={docForm.is_active}
+                      onChange={(event) => setDocForm((prev) => ({ ...prev, is_active: event.target.checked }))}
+                    />
+                    Activo
+                  </label>
+                </div>
                 <div className="form-actions">
                   <button className="btn-primary" type="submit">
                     Agregar documento
@@ -1568,18 +1688,38 @@ export default function CrmAdmin() {
               {docError ? <p className="error">{docError}</p> : null}
             </div>
             <div className="table">
-              <div className="table-row table-head table-row--docs">
+              <div className="table-row table-head" style={{ gridTemplateColumns: "2fr 1fr 90px 90px 80px" }}>
                 <span>Documento</span>
                 <span>Etapa</span>
                 <span>Obligatorio</span>
+                <span>Activo</span>
                 <span></span>
               </div>
               {documentTypes.map((doc) => {
-                const edit = docEdits[doc.id] ?? { stage: doc.stage, is_required: doc.is_required };
+                const edit = docEdits[doc.id] ?? {
+                  label: doc.label,
+                  stage: doc.stage,
+                  is_required: doc.is_required,
+                  is_active: doc.is_active,
+                };
                 return (
-                  <div className="table-row table-row--docs" key={doc.id}>
+                  <div
+                    className="table-row"
+                    key={doc.id}
+                    style={{
+                      gridTemplateColumns: "2fr 1fr 90px 90px 80px",
+                      opacity: edit.is_active ? 1 : 0.45,
+                    }}
+                  >
                     <span className="table-primary">
-                      <strong>{doc.name}</strong>
+                      <input
+                        className="input"
+                        value={edit.label}
+                        onChange={(event) =>
+                          setDocEdits((prev) => ({ ...prev, [doc.id]: { ...edit, label: event.target.value } }))
+                        }
+                      />
+                      <small style={{ opacity: 0.45, fontSize: "0.6rem" }}>{doc.name}</small>
                     </span>
                     <span>
                       <select
@@ -1588,10 +1728,7 @@ export default function CrmAdmin() {
                         onChange={(event) =>
                           setDocEdits((prev) => ({
                             ...prev,
-                            [doc.id]: {
-                              ...edit,
-                              stage: event.target.value as DocumentTypeRow["stage"],
-                            },
+                            [doc.id]: { ...edit, stage: event.target.value as DocumentTypeRow["stage"] },
                           }))
                         }
                       >
@@ -1600,19 +1737,28 @@ export default function CrmAdmin() {
                         <option value="onboarding">Onboarding</option>
                       </select>
                     </span>
-                    <span>
+                    <span style={{ display: "flex", justifyContent: "center" }}>
                       <label className="checkbox">
                         <input
                           type="checkbox"
                           checked={edit.is_required}
                           onChange={(event) =>
-                            setDocEdits((prev) => ({
-                              ...prev,
-                              [doc.id]: { ...edit, is_required: event.target.checked },
-                            }))
+                            setDocEdits((prev) => ({ ...prev, [doc.id]: { ...edit, is_required: event.target.checked } }))
                           }
                         />
                         {edit.is_required ? "Sí" : "No"}
+                      </label>
+                    </span>
+                    <span style={{ display: "flex", justifyContent: "center" }}>
+                      <label className="checkbox">
+                        <input
+                          type="checkbox"
+                          checked={edit.is_active}
+                          onChange={(event) =>
+                            setDocEdits((prev) => ({ ...prev, [doc.id]: { ...edit, is_active: event.target.checked } }))
+                          }
+                        />
+                        {edit.is_active ? "Sí" : "No"}
                       </label>
                     </span>
                     <span>
@@ -1681,136 +1827,134 @@ export default function CrmAdmin() {
                 <p className="helper">No hay solicitudes recientes para usar en la vista previa.</p>
               ) : null}
             </div>
+            {/* ── Nueva plantilla (colapsable) ── */}
             <div className="card">
-              <h4>Nueva plantilla</h4>
-              <div className="template-editor">
-                <form className="template-editor__form" onSubmit={handleTemplateSubmit}>
-                  <div className="form-grid">
-                    <label>
-                      Clave
-                      <input
-                        className="input"
-                        value={templateForm.template_key}
-                        onChange={(event) =>
-                          setTemplateForm((prev) => ({ ...prev, template_key: event.target.value }))
-                        }
-                      />
-                    </label>
-                    <label>
-                      Asunto
-                      <input
-                        className="input"
-                        value={templateForm.subject}
-                        ref={(node) => {
-                          templateSubjectRefs.current["new"] = node;
-                        }}
-                        onFocus={() => setTemplateFocus({ id: "new", field: "subject" })}
-                        onChange={(event) =>
-                          setTemplateForm((prev) => ({ ...prev, subject: event.target.value }))
-                        }
-                      />
-                    </label>
-                    <label>
-                      Contenido
-                      <textarea
-                        className="input"
-                        value={templateForm.body_md}
-                        ref={(node) => {
-                          templateBodyRefs.current["new"] = node;
-                        }}
-                        onFocus={() => setTemplateFocus({ id: "new", field: "body" })}
-                        onChange={(event) => setTemplateForm((prev) => ({ ...prev, body_md: event.target.value }))}
-                      />
-                    </label>
-                  </div>
-                  <div className="template-variables">
-                    <p>Variables disponibles</p>
-                    <div className="template-chips">
-                      {variableCatalog.map((variable) => (
-                        <button
-                          className="template-chip"
-                          type="button"
-                          key={variable.key}
-                          title={variable.description ?? ""}
-                          onClick={() =>
-                            insertTemplateToken(
-                              "new",
-                              variable.token,
-                              { subject: templateForm.subject, body_md: templateForm.body_md },
-                              (next) =>
-                                setTemplateForm((prev) => ({
-                                  ...prev,
-                                  subject: next.subject,
-                                  body_md: next.body_md,
-                                })),
-                            )
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <h4 style={{ margin: 0 }}>Nueva plantilla</h4>
+                <button
+                  className="btn-ghost"
+                  type="button"
+                  onClick={() => setShowNewTemplate((v) => !v)}
+                >
+                  {showNewTemplate ? "▲ Ocultar" : "▼ Crear nueva"}
+                </button>
+              </div>
+              {showNewTemplate ? (
+                <div className="template-editor" style={{ marginTop: "1rem" }}>
+                  <form className="template-editor__form" onSubmit={handleTemplateSubmit}>
+                    <div className="form-grid">
+                      <label>
+                        Clave
+                        <input
+                          className="input"
+                          value={templateForm.template_key}
+                          onChange={(event) =>
+                            setTemplateForm((prev) => ({ ...prev, template_key: event.target.value }))
                           }
-                        >
-                          <span>{variable.token}</span>
-                          <small>{variable.label}</small>
-                        </button>
-                      ))}
+                        />
+                      </label>
+                      <label>
+                        Asunto
+                        <input
+                          className="input"
+                          value={templateForm.subject}
+                          ref={(node) => { templateSubjectRefs.current["new"] = node; }}
+                          onChange={(event) =>
+                            setTemplateForm((prev) => ({ ...prev, subject: event.target.value }))
+                          }
+                        />
+                      </label>
                     </div>
-                    {usingFallbackCatalog ? (
-                      <p className="helper">Catálogo oficial vacío, mostrando ejemplos locales.</p>
-                    ) : null}
-                    {variableCatalog.length === 0 ? (
-                      <p className="helper">No hay variables activas en el catálogo.</p>
-                    ) : null}
-                    <small className="helper">
-                      Se inserta en el campo activo. Si no hay foco, se agrega al contenido.
-                    </small>
-                  </div>
-                  <div className="form-actions">
-                    <button className="btn-primary" type="submit">
-                      Crear plantilla
-                    </button>
-                  </div>
-                </form>
-                <div className="template-preview">
-                  <h4>Vista previa</h4>
-                  <div className="preview-block">
-                    <small>Asunto</small>
-                    <div className="preview-text">
-                      {renderTemplatePreview(templateForm.subject || "Sin asunto", previewValues)}
+                    <label style={{ display: "block", marginBottom: "0.5rem" }}>Contenido</label>
+                    <ReactQuill
+                      theme="snow"
+                      value={templateForm.body_md}
+                      onChange={(value) => setTemplateForm((prev) => ({ ...prev, body_md: value }))}
+                      style={{ marginBottom: "1rem" }}
+                    />
+                    <div className="template-variables">
+                      <p>Variables disponibles</p>
+                      <div className="template-chips">
+                        {variableCatalog.map((variable) => (
+                          <button
+                            className="template-chip"
+                            type="button"
+                            key={variable.key}
+                            title={variable.description ?? ""}
+                            onClick={() =>
+                              setTemplateForm((prev) => ({
+                                ...prev,
+                                body_md: prev.body_md + variable.token,
+                              }))
+                            }
+                          >
+                            <span>{variable.token}</span>
+                            <small>{variable.label}</small>
+                          </button>
+                        ))}
+                      </div>
+                      {variableCatalog.length === 0 ? (
+                        <p className="helper">No hay variables activas en el catálogo.</p>
+                      ) : null}
                     </div>
-                  </div>
-                  <div className="preview-block">
-                    <small>Mensaje</small>
-                    <div className="preview-text">
-                      {renderTemplatePreview(templateForm.body_md || "Sin contenido", previewValues)}
+                    <div className="form-actions">
+                      <button className="btn-primary" type="submit">
+                        Crear plantilla
+                      </button>
                     </div>
-                  </div>
-                  <div className="template-usage">
-                    <small>Variables usadas</small>
-                    {newTemplateVariables.length === 0 ? (
-                      <p className="helper">No se detectaron variables en la plantilla.</p>
-                    ) : (
-                      <>
-                        <div className="template-usage__chips">
-                          {newTemplateVariables.map((key) => (
-                            <span
-                              key={`new-${key}`}
-                              className={`template-token ${variableKeys.has(key) ? "" : "template-token--warn"}`}
-                            >
-                              {`{${key}}`}
-                            </span>
-                          ))}
-                        </div>
-                        {newUnknownVariables.length > 0 ? (
-                          <p className="error">Algunas variables no están en el catálogo oficial.</p>
-                        ) : (
-                          <p className="helper">Todas las variables existen en el catálogo.</p>
-                        )}
-                      </>
-                    )}
+                  </form>
+                  <div className="template-preview">
+                    <h4>Vista previa</h4>
+                    <div className="preview-block">
+                      <small>Asunto</small>
+                      <div className="preview-text">
+                        {renderTemplatePreview(templateForm.subject || "Sin asunto", previewValues)}
+                      </div>
+                    </div>
+                    <div className="preview-block">
+                      <small>Mensaje</small>
+                      {(() => {
+                        const rendered = renderTemplatePreview(templateForm.body_md || "Sin contenido", previewValues);
+                        return isHtmlContent(rendered)
+                          ? <div className="preview-text" dangerouslySetInnerHTML={{ __html: rendered }} />
+                          : <div className="preview-text">{rendered}</div>;
+                      })()}
+                    </div>
+                    <div className="template-usage">
+                      <small>Variables usadas</small>
+                      {newTemplateVariables.length === 0 ? (
+                        <p className="helper">No se detectaron variables en la plantilla.</p>
+                      ) : (
+                        <>
+                          <div className="template-usage__chips">
+                            {newTemplateVariables.map((key) => (
+                              <span
+                                key={`new-${key}`}
+                                className={`template-token ${variableKeys.has(key) ? "" : "template-token--warn"}`}
+                              >
+                                {`{${key}}`}
+                              </span>
+                            ))}
+                          </div>
+                          {newUnknownVariables.length > 0 ? (
+                            <p className="error">Algunas variables no están en el catálogo oficial.</p>
+                          ) : (
+                            <p className="helper">Todas las variables existen en el catálogo.</p>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
+              ) : null}
             </div>
+
             {templateError ? <p className="error">{templateError}</p> : null}
-            <div className="table template-list">
+
+            {/* ── Lista de plantillas (acordeón) ── */}
+            <div className="template-list">
               {templates.map((template) => {
+                const isExpanded = expandedTemplates.has(template.id);
                 const edit = templateEdits[template.id] ?? {
                   subject: template.subject,
                   body_md: template.body_md,
@@ -1818,150 +1962,219 @@ export default function CrmAdmin() {
                 };
                 const usedVariables = extractTemplateVariables(edit.subject, edit.body_md);
                 const unknownVariables = usedVariables.filter((key) => !variableKeys.has(key));
+                const testEmail = testEmailMap[template.id] ?? "";
                 return (
-                  <div className="card" key={template.id}>
-                    <div className="template-editor">
-                      <div className="template-editor__form">
-                        <div className="form-grid">
-                          <label>
-                            Clave
-                            <input className="input" value={template.template_key} disabled />
-                          </label>
-                          <label>
-                            Asunto
-                            <input
-                              className="input"
-                              value={edit.subject}
-                              ref={(node) => {
-                                templateSubjectRefs.current[template.id] = node;
-                              }}
-                              onFocus={() => setTemplateFocus({ id: template.id, field: "subject" })}
-                              onChange={(event) =>
-                                setTemplateEdits((prev) => ({
-                                  ...prev,
-                                  [template.id]: { ...edit, subject: event.target.value },
-                                }))
-                              }
-                            />
-                          </label>
-                          <label className="checkbox">
-                            <input
-                              type="checkbox"
-                              checked={edit.is_active}
-                              onChange={(event) =>
-                                setTemplateEdits((prev) => ({
-                                  ...prev,
-                                  [template.id]: { ...edit, is_active: event.target.checked },
-                                }))
-                              }
-                            />
-                            Activa
-                          </label>
-                          <label>
-                            Contenido
-                            <textarea
-                              className="input"
-                              value={edit.body_md}
-                              ref={(node) => {
-                                templateBodyRefs.current[template.id] = node;
-                              }}
-                              onFocus={() => setTemplateFocus({ id: template.id, field: "body" })}
-                              onChange={(event) =>
-                                setTemplateEdits((prev) => ({
-                                  ...prev,
-                                  [template.id]: { ...edit, body_md: event.target.value },
-                                }))
-                              }
-                            />
-                          </label>
-                        </div>
-                        <div className="template-variables">
-                          <p>Variables disponibles</p>
-                          <div className="template-chips">
-                            {variableCatalog.map((variable) => (
-                              <button
-                                className="template-chip"
-                                type="button"
-                                key={`${template.id}-${variable.key}`}
-                                title={variable.description ?? ""}
-                                onClick={() =>
-                                  insertTemplateToken(template.id, variable.token, edit, (next) =>
+                  <div
+                    className="card"
+                    key={template.id}
+                    style={{ opacity: edit.is_active ? 1 : 0.5, marginBottom: "0.5rem" }}
+                  >
+                    {/* ── Cabecera del acordeón ── */}
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "0.75rem",
+                        cursor: "pointer",
+                      }}
+                      onClick={() =>
+                        setExpandedTemplates((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(template.id)) next.delete(template.id);
+                          else next.add(template.id);
+                          return next;
+                        })
+                      }
+                    >
+                      <span style={{ flex: 1 }}>
+                        <strong style={{ fontSize: "0.85rem", fontFamily: "monospace" }}>
+                          {template.template_key}
+                        </strong>
+                        <span style={{ color: "var(--text-muted, #aaa)", marginLeft: "0.5rem", fontSize: "0.85rem" }}>
+                          — {template.subject}
+                        </span>
+                      </span>
+                      {edit.is_active ? (
+                        <span style={{ fontSize: "0.7rem", padding: "2px 8px", borderRadius: "999px", background: "rgba(34,197,94,0.15)", color: "#22c55e", fontWeight: 600 }}>
+                          ACTIVA
+                        </span>
+                      ) : (
+                        <span style={{ fontSize: "0.7rem", padding: "2px 8px", borderRadius: "999px", background: "rgba(239,68,68,0.15)", color: "#ef4444", fontWeight: 600 }}>
+                          INACTIVA
+                        </span>
+                      )}
+                      <button
+                        className="btn-ghost"
+                        type="button"
+                        style={{ pointerEvents: "none", minWidth: "2rem" }}
+                        tabIndex={-1}
+                      >
+                        {isExpanded ? "▲" : "▼"}
+                      </button>
+                    </div>
+
+                    {/* ── Cuerpo del acordeón ── */}
+                    {isExpanded ? (
+                      <div className="template-editor" style={{ marginTop: "1rem" }}>
+                        <div className="template-editor__form">
+                          <div className="form-grid">
+                            <label>
+                              Clave
+                              <input className="input" value={template.template_key} disabled />
+                            </label>
+                            <label>
+                              Asunto
+                              <input
+                                className="input"
+                                value={edit.subject}
+                                ref={(node) => { templateSubjectRefs.current[template.id] = node; }}
+                                onChange={(event) =>
+                                  setTemplateEdits((prev) => ({
+                                    ...prev,
+                                    [template.id]: { ...edit, subject: event.target.value },
+                                  }))
+                                }
+                              />
+                            </label>
+                            <label className="checkbox">
+                              <input
+                                type="checkbox"
+                                checked={edit.is_active}
+                                onChange={(event) =>
+                                  setTemplateEdits((prev) => ({
+                                    ...prev,
+                                    [template.id]: { ...edit, is_active: event.target.checked },
+                                  }))
+                                }
+                              />
+                              Activa
+                            </label>
+                          </div>
+                          <label style={{ display: "block", marginBottom: "0.5rem" }}>Contenido</label>
+                          <ReactQuill
+                            theme="snow"
+                            value={edit.body_md}
+                            onChange={(value) =>
+                              setTemplateEdits((prev) => ({
+                                ...prev,
+                                [template.id]: { ...edit, body_md: value },
+                              }))
+                            }
+                            style={{ marginBottom: "1rem" }}
+                          />
+                          <div className="template-variables">
+                            <p>Variables disponibles</p>
+                            <div className="template-chips">
+                              {variableCatalog.map((variable) => (
+                                <button
+                                  className="template-chip"
+                                  type="button"
+                                  key={`${template.id}-${variable.key}`}
+                                  title={variable.description ?? ""}
+                                  onClick={() =>
                                     setTemplateEdits((prev) => ({
                                       ...prev,
                                       [template.id]: {
-                                        subject: next.subject,
-                                        body_md: next.body_md,
-                                        is_active: edit.is_active,
+                                        ...edit,
+                                        body_md: edit.body_md + variable.token,
                                       },
-                                    })),
-                                  )
-                                }
-                              >
-                                <span>{variable.token}</span>
-                                <small>{variable.label}</small>
-                              </button>
-                            ))}
+                                    }))
+                                  }
+                                >
+                                  <span>{variable.token}</span>
+                                  <small>{variable.label}</small>
+                                </button>
+                              ))}
+                            </div>
+                            {variableCatalog.length === 0 ? (
+                              <p className="helper">No hay variables activas en el catálogo.</p>
+                            ) : null}
                           </div>
-                          {usingFallbackCatalog ? (
-                            <p className="helper">Catálogo oficial vacío, mostrando ejemplos locales.</p>
-                          ) : null}
-                          {variableCatalog.length === 0 ? (
-                            <p className="helper">No hay variables activas en el catálogo.</p>
-                          ) : null}
-                          <small className="helper">
-                            Se inserta en el campo activo. Si no hay foco, se agrega al contenido.
-                          </small>
-                        </div>
-                        <div className="form-actions">
-                          <button
-                            className="btn-ghost"
-                            type="button"
-                            onClick={() => handleTemplateSave(template)}
-                          >
-                            Guardar cambios
-                          </button>
-                        </div>
-                      </div>
-                      <div className="template-preview">
-                        <h4>Vista previa</h4>
-                        <div className="preview-block">
-                          <small>Asunto</small>
-                          <div className="preview-text">
-                            {renderTemplatePreview(edit.subject || "Sin asunto", previewValues)}
+                          <div className="form-actions">
+                            <button
+                              className="btn-ghost"
+                              type="button"
+                              onClick={() => handleTemplateSave(template)}
+                            >
+                              Guardar cambios
+                            </button>
                           </div>
-                        </div>
-                        <div className="preview-block">
-                          <small>Mensaje</small>
-                          <div className="preview-text">
-                            {renderTemplatePreview(edit.body_md || "Sin contenido", previewValues)}
-                          </div>
-                        </div>
-                        <div className="template-usage">
-                          <small>Variables usadas</small>
-                          {usedVariables.length === 0 ? (
-                            <p className="helper">No se detectaron variables en la plantilla.</p>
-                          ) : (
-                            <>
-                              <div className="template-usage__chips">
-                                {usedVariables.map((key) => (
-                                  <span
-                                    key={`${template.id}-${key}`}
-                                    className={`template-token ${variableKeys.has(key) ? "" : "template-token--warn"}`}
-                                  >
-                                    {`{${key}}`}
-                                  </span>
-                                ))}
-                              </div>
-                              {unknownVariables.length > 0 ? (
-                                <p className="error">Hay variables fuera del catálogo oficial.</p>
-                              ) : (
-                                <p className="helper">Todas las variables existen en el catálogo.</p>
+                          {/* ── Email de prueba ── */}
+                          <div style={{ marginTop: "1.25rem", paddingTop: "1rem", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+                            <small style={{ display: "block", marginBottom: "0.5rem", opacity: 0.6 }}>
+                              Enviar correo de prueba
+                              {!previewApplicationId && (
+                                <span style={{ color: "#f59e0b", marginLeft: "0.5rem" }}>
+                                  — selecciona una solicitud en "Datos para vista previa"
+                                </span>
                               )}
-                            </>
-                          )}
+                            </small>
+                            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                              <input
+                                className="input"
+                                type="email"
+                                placeholder="correo@destino.com"
+                                value={testEmail}
+                                style={{ flex: 1 }}
+                                onChange={(e) =>
+                                  setTestEmailMap((prev) => ({ ...prev, [template.id]: e.target.value }))
+                                }
+                              />
+                              <button
+                                className="btn-ghost"
+                                type="button"
+                                disabled={sendingTestEmail[template.id] || !previewApplicationId}
+                                onClick={() => handleSendTestEmail(template, testEmail)}
+                              >
+                                {sendingTestEmail[template.id] ? "Enviando…" : "Enviar prueba"}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="template-preview">
+                          <h4>Vista previa</h4>
+                          <div className="preview-block">
+                            <small>Asunto</small>
+                            <div className="preview-text">
+                              {renderTemplatePreview(edit.subject || "Sin asunto", previewValues)}
+                            </div>
+                          </div>
+                          <div className="preview-block">
+                            <small>Mensaje</small>
+                            {(() => {
+                              const rendered = renderTemplatePreview(edit.body_md || "Sin contenido", previewValues);
+                              return isHtmlContent(rendered)
+                                ? <div className="preview-text" dangerouslySetInnerHTML={{ __html: rendered }} />
+                                : <div className="preview-text">{rendered}</div>;
+                            })()}
+                          </div>
+                          <div className="template-usage">
+                            <small>Variables usadas</small>
+                            {usedVariables.length === 0 ? (
+                              <p className="helper">No se detectaron variables en la plantilla.</p>
+                            ) : (
+                              <>
+                                <div className="template-usage__chips">
+                                  {usedVariables.map((key) => (
+                                    <span
+                                      key={`${template.id}-${key}`}
+                                      className={`template-token ${variableKeys.has(key) ? "" : "template-token--warn"}`}
+                                    >
+                                      {`{${key}}`}
+                                    </span>
+                                  ))}
+                                </div>
+                                {unknownVariables.length > 0 ? (
+                                  <p className="error">Hay variables fuera del catálogo oficial.</p>
+                                ) : (
+                                  <p className="helper">Todas las variables existen en el catálogo.</p>
+                                )}
+                              </>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
+                    ) : null}
                   </div>
                 );
               })}
@@ -2207,30 +2420,278 @@ export default function CrmAdmin() {
           </div>
         ) : null}
 
-        {activeTab === "estatus" ? (
+        {activeTab === "contratados" ? (
           <div className="admin-section">
             <div className="card">
-              <h3>Catálogo de estatus</h3>
+              <h3>Empleados Contratados</h3>
+              <p style={{ opacity: 0.6, fontSize: '0.8rem', marginBottom: '1.2rem' }}>
+                Historial de contrataciones. Al descontratar, registra el semáforo de recontratación para futuras postulaciones.
+              </p>
+              <input
+                className="input"
+                placeholder="Buscar por nombre, puesto o sucursal..."
+                value={hiredSearch}
+                onChange={e => setHiredSearch(e.target.value)}
+                style={{ maxWidth: 380 }}
+              />
+            </div>
+            {(() => {
+              const q = hiredSearch.trim().toLowerCase();
+              const filtered = q
+                ? hiredApps.filter(app => {
+                    const p = app.recruit_candidates?.recruit_persons;
+                    return (
+                      `${p?.first_name ?? ''} ${p?.last_name ?? ''}`.toLowerCase().includes(q) ||
+                      (app.recruit_job_postings?.title ?? '').toLowerCase().includes(q) ||
+                      (app.recruit_job_postings?.branch ?? '').toLowerCase().includes(q)
+                    );
+                  })
+                : hiredApps;
+              return filtered.length === 0 ? (
+                <div className="card"><p style={{ opacity: 0.5, fontSize: '0.8rem' }}>{q ? 'Sin resultados para esa búsqueda.' : 'Sin empleados contratados aún.'}</p></div>
+              ) : (
+              <div className="table">
+                <div className="table-row table-head table-row--admin">
+                  <span>Empleado</span>
+                  <span>Puesto</span>
+                  <span>Fecha contratación</span>
+                  <span>Semáforo salida</span>
+                  <span></span>
+                </div>
+                {filtered.map(app => {
+                  const person = app.recruit_candidates?.recruit_persons;
+                  const isOpen = descontratarId === app.id;
+                  const flagColor = app.rehire_flag?.color;
+                  const flagColors = { green: { bg: '#22c55e', label: 'PUEDE RECONTRATARSE' }, yellow: { bg: '#eab308', label: 'REVISAR ANTES DE CONTRATAR' }, red: { bg: '#ef4444', label: 'NO RECONTRATAR' } } as const;
+                  return (
+                    <div key={app.id} style={{ borderBottom: '1px solid var(--border-light)' }}>
+                      <div className="table-row table-row--admin">
+                        <span className="table-primary">
+                          <Link to={`/crm/applications/${app.id}`} style={{ color: 'inherit', textDecoration: 'none' }}>
+                            <strong style={{ borderBottom: '1px dashed var(--accent)', cursor: 'pointer' }}>
+                              {person ? `${person.first_name} ${person.last_name}` : '—'}
+                            </strong>
+                          </Link>
+                          <small>{person?.email ?? ''}</small>
+                        </span>
+                        <span>
+                          <strong>{app.recruit_job_postings?.title ?? '—'}</strong>
+                          <small style={{ display: 'block', opacity: 0.6 }}>{app.recruit_job_postings?.branch ?? ''}</small>
+                        </span>
+                        <span style={{ fontSize: '0.75rem', opacity: 0.7 }}>
+                          {new Intl.DateTimeFormat('es-MX', { dateStyle: 'medium', timeZone: 'America/Mexico_City' }).format(new Date(app.updated_at))}
+                        </span>
+                        <span>
+                          {flagColor ? (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.65rem', fontWeight: 800, padding: '0.3rem 0.8rem', borderRadius: '20px', background: `${flagColors[flagColor]?.bg}22`, color: flagColors[flagColor]?.bg }}>
+                              <span style={{ width: 8, height: 8, borderRadius: '50%', background: flagColors[flagColor]?.bg, display: 'inline-block' }} />
+                              {flagColors[flagColor]?.label}
+                            </span>
+                          ) : (
+                            <span style={{ opacity: 0.35, fontSize: '0.75rem' }}>Activo</span>
+                          )}
+                        </span>
+                        <span>
+                          {!flagColor && (
+                            <button
+                              className="btn-ghost"
+                              type="button"
+                              onClick={() => { setDescontratarId(isOpen ? null : app.id); setDescontratarError(null); setDescontratarForm({ color: 'green', reason: '' }); }}
+                              style={{ fontSize: '0.7rem', color: isOpen ? 'var(--text-muted)' : 'var(--danger)', borderColor: isOpen ? 'var(--border-light)' : 'var(--danger)' }}
+                            >
+                              {isOpen ? 'CANCELAR' : 'DESCONTRATAR'}
+                            </button>
+                          )}
+                        </span>
+                      </div>
+
+                      {/* ── Formulario de salida ── */}
+                      {isOpen && (
+                        <div style={{ padding: '1.5rem 2rem', background: 'var(--bg-accent)', borderTop: '1px solid var(--border-light)' }}>
+                          <form onSubmit={handleDescontratar} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                            <p className="mono" style={{ fontSize: '0.6rem', fontWeight: 800, margin: 0, opacity: 0.6 }}>// REGISTRAR SALIDA — {person?.first_name} {person?.last_name}</p>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '1rem' }}>
+                              <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>SEMÁFORO DE RECONTRATACIÓN
+                                <div style={{ display: 'flex', gap: '0.8rem', marginTop: '0.8rem', alignItems: 'center' }}>
+                                  {(['green', 'yellow', 'red'] as const).map(c => (
+                                    <button
+                                      key={c}
+                                      type="button"
+                                      onClick={() => setDescontratarForm(p => ({ ...p, color: c }))}
+                                      title={c === 'green' ? 'Recontratable' : c === 'yellow' ? 'A criterio' : 'No recontratar'}
+                                      style={{
+                                        width: 36, height: 36, borderRadius: '50%',
+                                        border: `3px solid ${descontratarForm.color === c ? flagColors[c].bg : 'transparent'}`,
+                                        background: flagColors[c].bg,
+                                        cursor: 'pointer',
+                                        opacity: descontratarForm.color === c ? 1 : 0.35,
+                                        transition: 'opacity 0.15s, border-color 0.15s',
+                                        flexShrink: 0,
+                                      }}
+                                    />
+                                  ))}
+                                </div>
+                              </label>
+                              <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>MOTIVO DE SALIDA *
+                                <textarea
+                                  className="input"
+                                  placeholder="Describe el motivo de la baja: renuncia voluntaria, término de contrato, desempeño, etc."
+                                  value={descontratarForm.reason}
+                                  onChange={e => setDescontratarForm(p => ({ ...p, reason: e.target.value }))}
+                                  style={{ marginTop: '0.5rem', minHeight: '70px' }}
+                                  required
+                                />
+                              </label>
+                            </div>
+                            {descontratarError && <p className="error">{descontratarError}</p>}
+                            <button className="btn-primary" type="submit" disabled={descontratarSaving} style={{ alignSelf: 'flex-end', padding: '0.8rem 2rem', fontWeight: 800 }}>
+                              {descontratarSaving ? 'REGISTRANDO...' : 'CONFIRMAR SALIDA'}
+                            </button>
+                          </form>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              );
+            })()}
+          </div>
+        ) : null}
+
+        {activeTab === "anfitriones" ? (
+          <div className="admin-section">
+            <div className="card">
+              <h3>Anfitriones de Onboarding</h3>
+              <p style={{ opacity: 0.6, fontSize: '0.8rem', marginBottom: '1.5rem' }}>Responsables de recibir a los nuevos empleados. Al guardar un plan de onboarding se les envía una notificación automática.</p>
+              <form className="form-grid" onSubmit={handleHostSubmit}>
+                <label>
+                  Nombre completo *
+                  <input className="input" value={hostForm.full_name} onChange={e => setHostForm(p => ({ ...p, full_name: e.target.value }))} placeholder="Ej: Carlos Ramírez" required />
+                </label>
+                <label>
+                  Correo electrónico *
+                  <input className="input" type="email" value={hostForm.email} onChange={e => setHostForm(p => ({ ...p, email: e.target.value }))} placeholder="carlos@empresa.com" required />
+                </label>
+                <label>
+                  Teléfono (opcional)
+                  <input className="input" value={hostForm.phone} onChange={e => setHostForm(p => ({ ...p, phone: e.target.value }))} placeholder="55 1234 5678" />
+                </label>
+                {hostError && <p className="error" style={{ gridColumn: '1/-1' }}>{hostError}</p>}
+                <div className="form-actions" style={{ gridColumn: '1/-1' }}>
+                  <button className="btn-ghost" type="submit" disabled={hostSaving}>{hostSaving ? "Guardando..." : "Agregar anfitrión"}</button>
+                </div>
+              </form>
             </div>
             <div className="table">
               <div className="table-row table-head table-row--admin">
-                <span>Estatus</span>
-                <span>Etiqueta</span>
-                <span>Motivo obligatorio</span>
-                <span>Activo</span>
+                <span>Nombre</span>
+                <span>Correo</span>
+                <span>Teléfono</span>
+                <span>Estado</span>
               </div>
-              {statuses.map((status) => (
-                <div className="table-row table-row--admin" key={status.status_key}>
-                  <span className="table-primary">
-                    <strong>{status.status_key}</strong>
-                    <small>Orden {status.sort_order}</small>
+              {hosts.length === 0 ? (
+                <div className="table-row"><span style={{ opacity: 0.5, fontSize: '0.8rem' }}>Sin anfitriones registrados.</span></div>
+              ) : hosts.map(host => (
+                <div className="table-row table-row--admin" key={host.id}>
+                  <span className="table-primary"><strong>{host.full_name}</strong></span>
+                  <span>{host.email}</span>
+                  <span>{host.phone ?? "—"}</span>
+                  <span>
+                    <button className="btn-ghost" type="button" onClick={() => toggleHostActive(host)} style={{ fontSize: '0.7rem', color: host.is_active ? 'var(--success)' : 'var(--text-muted)' }}>
+                      {host.is_active ? "Activo" : "Inactivo"}
+                    </button>
                   </span>
-                  <span>{status.label}</span>
-                  <span>{status.requires_reason ? "Sí" : "No"}</span>
-                  <span>{status.is_active ? "Sí" : "No"}</span>
                 </div>
               ))}
             </div>
+          </div>
+        ) : null}
+
+        {activeTab === "estatus" ? (
+          <div className="admin-section">
+
+            {/* ── Catálogo de estatus (editable) ── */}
+            <div className="card">
+              <h3>Catálogo de estatus</h3>
+              <p className="lead">Edita etiquetas, orden y configuración de cada estatus del pipeline.</p>
+              {statusError ? <p className="error">{statusError}</p> : null}
+            </div>
+            <div className="table">
+              <div className="table-row table-head" style={{ gridTemplateColumns: "2fr 2fr 80px 80px 70px 80px" }}>
+                <span>Clave</span>
+                <span>Etiqueta</span>
+                <span>Orden</span>
+                <span>Motivo</span>
+                <span>Activo</span>
+                <span></span>
+              </div>
+              {statuses.map((status) => {
+                const edit = statusEdits[status.status_key] ?? {
+                  label: status.label,
+                  requires_reason: status.requires_reason,
+                  is_active: status.is_active,
+                  sort_order: status.sort_order,
+                };
+                return (
+                  <div className="table-row" key={status.status_key} style={{ gridTemplateColumns: "2fr 2fr 80px 80px 70px 80px", opacity: edit.is_active ? 1 : 0.5 }}>
+                    <span className="table-primary">
+                      <strong style={{ fontFamily: "monospace", fontSize: "0.8rem" }}>{status.status_key}</strong>
+                    </span>
+                    <span>
+                      <input
+                        className="input"
+                        value={edit.label}
+                        onChange={(e) =>
+                          setStatusEdits((prev) => ({ ...prev, [status.status_key]: { ...edit, label: e.target.value } }))
+                        }
+                      />
+                    </span>
+                    <span>
+                      <input
+                        className="input"
+                        type="number"
+                        value={edit.sort_order}
+                        onChange={(e) =>
+                          setStatusEdits((prev) => ({ ...prev, [status.status_key]: { ...edit, sort_order: Number(e.target.value) } }))
+                        }
+                      />
+                    </span>
+                    <span>
+                      <label className="checkbox">
+                        <input
+                          type="checkbox"
+                          checked={edit.requires_reason}
+                          onChange={(e) =>
+                            setStatusEdits((prev) => ({ ...prev, [status.status_key]: { ...edit, requires_reason: e.target.checked } }))
+                          }
+                        />
+                        {edit.requires_reason ? "Sí" : "No"}
+                      </label>
+                    </span>
+                    <span>
+                      <label className="checkbox">
+                        <input
+                          type="checkbox"
+                          checked={edit.is_active}
+                          onChange={(e) =>
+                            setStatusEdits((prev) => ({ ...prev, [status.status_key]: { ...edit, is_active: e.target.checked } }))
+                          }
+                        />
+                        {edit.is_active ? "Sí" : "No"}
+                      </label>
+                    </span>
+                    <span>
+                      <button className="btn-ghost" type="button" onClick={() => handleStatusSave(status)}>
+                        Guardar
+                      </button>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* ── Nueva transición ── */}
             <div className="card">
               <h3>Reglas de transición</h3>
               <p className="lead">Define qué estatus se permiten como siguiente paso.</p>
@@ -2245,10 +2706,8 @@ export default function CrmAdmin() {
                     }
                   >
                     <option value="">Selecciona</option>
-                    {statusOptions.map((status) => (
-                      <option key={status.status_key} value={status.status_key}>
-                        {status.label}
-                      </option>
+                    {statusOptions.map((s) => (
+                      <option key={s.status_key} value={s.status_key}>{s.label}</option>
                     ))}
                   </select>
                 </label>
@@ -2262,11 +2721,11 @@ export default function CrmAdmin() {
                     }
                   >
                     <option value="">Selecciona</option>
-                    {statusOptions.map((status) => (
-                      <option key={status.status_key} value={status.status_key}>
-                        {status.label}
-                      </option>
-                    ))}
+                    {statusOptions
+                      .filter((s) => s.status_key !== transitionForm.from_status_key)
+                      .map((s) => (
+                        <option key={s.status_key} value={s.status_key}>{s.label}</option>
+                      ))}
                   </select>
                 </label>
                 <label>
@@ -2279,10 +2738,8 @@ export default function CrmAdmin() {
                     }
                   >
                     <option value="">Sin correo</option>
-                    {templates.map((template) => (
-                      <option key={template.id} value={template.template_key}>
-                        {template.subject} ({template.template_key})
-                      </option>
+                    {templates.map((t) => (
+                      <option key={t.id} value={t.template_key}>{t.template_key}</option>
                     ))}
                   </select>
                 </label>
@@ -2297,99 +2754,84 @@ export default function CrmAdmin() {
                   Activa
                 </label>
                 <div className="form-actions">
-                  <button className="btn-primary" type="submit">
-                    Guardar transición
-                  </button>
+                  <button className="btn-primary" type="submit">Agregar transición</button>
                 </div>
               </form>
               {transitionError ? <p className="error">{transitionError}</p> : null}
-              <div className="table">
-                <div className="table-row table-head table-row--transition">
-                  <span>Origen</span>
-                  <span>Destino</span>
-                  <span>Correo</span>
-                  <span>Activa</span>
-                  <span></span>
-                </div>
-                {transitions.length === 0 ? (
-                  <p>No hay transiciones configuradas.</p>
-                ) : (
-                  transitions.map((transition) => {
-                    const key = buildTransitionKey(transition);
-                    const edit = transitionEdits[key] ?? {
-                      is_active: transition.is_active,
-                      template_key: transition.template_key ?? "",
-                    };
-                    return (
-                      <div className="table-row table-row--transition" key={key}>
-                        <span className="table-primary">
-                          <strong>
-                            {statusLabelMap[transition.from_status_key]?.label ?? transition.from_status_key}
-                          </strong>
-                          <small>{transition.from_status_key}</small>
-                        </span>
-                        <span className="table-primary">
-                          <strong>
-                            {statusLabelMap[transition.to_status_key]?.label ?? transition.to_status_key}
-                          </strong>
-                          <small>{transition.to_status_key}</small>
-                        </span>
-                        <span>
-                          <select
-                            className="input"
-                            value={edit.template_key ?? ""}
-                            onChange={(event) =>
-                              setTransitionEdits((prev) => ({
-                                ...prev,
-                                [key]: { ...edit, template_key: event.target.value || null },
-                              }))
-                            }
-                          >
-                            <option value="">Sin correo</option>
-                            {templates.map((template) => (
-                              <option key={template.id} value={template.template_key}>
-                                {template.subject} ({template.template_key})
-                              </option>
-                            ))}
-                          </select>
-                        </span>
-                        <span>
-                          <label className="checkbox">
-                            <input
-                              type="checkbox"
-                              checked={edit.is_active}
+            </div>
+
+            {/* ── Transiciones agrupadas por origen ── */}
+            {statusOptions.map((fromStatus) => {
+              const group = transitions.filter((t) => t.from_status_key === fromStatus.status_key);
+              if (group.length === 0) return null;
+              return (
+                <div className="card" key={fromStatus.status_key}>
+                  <h4 style={{ marginBottom: "1rem", fontFamily: "monospace", fontSize: "0.85rem" }}>
+                    {fromStatus.label}
+                    <small style={{ marginLeft: "0.75rem", opacity: 0.5, fontWeight: 400 }}>{fromStatus.status_key}</small>
+                  </h4>
+                  <div className="table">
+                    <div className="table-row table-head" style={{ gridTemplateColumns: "2fr 2fr 1fr 90px" }}>
+                      <span>Destino</span>
+                      <span>Correo automático</span>
+                      <span>Activa</span>
+                      <span></span>
+                    </div>
+                    {group.map((transition) => {
+                      const key = buildTransitionKey(transition);
+                      const edit = transitionEdits[key] ?? {
+                        is_active: transition.is_active,
+                        template_key: transition.template_key ?? "",
+                      };
+                      return (
+                        <div className="table-row" key={key} style={{ gridTemplateColumns: "2fr 2fr 1fr 90px", opacity: edit.is_active ? 1 : 0.5 }}>
+                          <span className="table-primary">
+                            <strong>{statusLabelMap[transition.to_status_key]?.label ?? transition.to_status_key}</strong>
+                            <small style={{ fontFamily: "monospace" }}>{transition.to_status_key}</small>
+                          </span>
+                          <span>
+                            <select
+                              className="input"
+                              value={edit.template_key ?? ""}
                               onChange={(event) =>
                                 setTransitionEdits((prev) => ({
                                   ...prev,
-                                  [key]: { ...edit, is_active: event.target.checked },
+                                  [key]: { ...edit, template_key: event.target.value || null },
                                 }))
                               }
-                            />
-                            {edit.is_active ? "Sí" : "No"}
-                          </label>
-                        </span>
-                        <span className="table-actions">
-                          <button
-                            className="btn-ghost"
-                            type="button"
-                            onClick={() => handleTransitionSave(transition)}
-                          >
-                            Guardar
-                          </button>
-                          <button
-                            className="btn-ghost"
-                            type="button"
-                            onClick={() => handleTransitionDelete(transition)}
-                          >
-                            Eliminar
-                          </button>
-                        </span>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
+                            >
+                              <option value="">Sin correo</option>
+                              {templates.map((t) => (
+                                <option key={t.id} value={t.template_key}>{t.template_key}</option>
+                              ))}
+                            </select>
+                          </span>
+                          <span>
+                            <label className="checkbox">
+                              <input
+                                type="checkbox"
+                                checked={edit.is_active}
+                                onChange={(event) =>
+                                  setTransitionEdits((prev) => ({
+                                    ...prev,
+                                    [key]: { ...edit, is_active: event.target.checked },
+                                  }))
+                                }
+                              />
+                              {edit.is_active ? "Sí" : "No"}
+                            </label>
+                          </span>
+                          <span className="table-actions">
+                            <button className="btn-ghost" type="button" onClick={() => handleTransitionSave(transition)}>Guardar</button>
+                            <button className="btn-ghost" type="button" onClick={() => handleTransitionDelete(transition)}>Eliminar</button>
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         ) : null}
 
@@ -2402,19 +2844,36 @@ export default function CrmAdmin() {
             {metricsError ? <p className="error">{metricsError}</p> : null}
             <div className="metrics-grid">
               <div className="card metric-card">
-                <span>Cambios de estatus</span>
+                <span>Candidatos Totales</span>
                 <strong>{metricSummary.statusChanged}</strong>
-                <small>Últimos 30 eventos</small>
+                <small>Total registrados</small>
               </div>
               <div className="card metric-card">
-                <span>Correos enviados</span>
+                <span>Correos enviandos</span>
                 <strong>{metricSummary.emailSent}</strong>
-                <small>Últimos 30 eventos</small>
+                <small>Enviados con éxito</small>
               </div>
               <div className="card metric-card">
                 <span>Correos fallidos</span>
                 <strong>{metricSummary.emailFailed}</strong>
-                <small>Últimos 30 eventos</small>
+                <small>Requieren atención</small>
+              </div>
+            </div>
+
+            {/* Nuevo desglose estratégico por Estatus */}
+            <div className="card">
+              <h4>Estado del Pipeline</h4>
+              <p className="helper">Conteo de candidatos activos por fase del proceso.</p>
+              <div className="status-stats-grid">
+                {(metricSummary as any).statusBreakdown?.map((item: any) => {
+                  const label = statusLabelMap[item.status_key]?.label || item.status_key;
+                  return (
+                    <div className="status-stat-item" key={item.status_key}>
+                      <span className="status-stat-label">{label}</span>
+                      <span className="status-stat-count">{item.count}</span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
             <div className="card">

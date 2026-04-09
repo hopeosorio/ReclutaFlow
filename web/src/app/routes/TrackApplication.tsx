@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useSearchParams, Link } from "react-router-dom";
-import { supabase } from "@/lib/supabaseClient";
+import { supabase, supabaseUrl, supabaseAnonKey } from "@/lib/supabaseClient";
 import InteractiveStars from "@/components/InteractiveStars";
 import {
     Check,
@@ -15,7 +15,10 @@ import {
     Video,
     XCircle,
     ArrowRight,
-    ShieldCheck
+    ShieldCheck,
+    Upload,
+    AlertCircle,
+    CheckCircle2
 } from "lucide-react";
 
 interface Application {
@@ -39,6 +42,7 @@ interface Application {
 interface DocumentInfo {
     id: string;
     name: string;
+    label: string;
     is_required: boolean;
     stage: string;
     existing: {
@@ -75,12 +79,6 @@ const friendlyStatusMap: Record<string, { label: string; icon: any; color: strin
         color: "#6366f1",
         desc: "Tu perfil ha superado los filtros iniciales y está en revisión para agendar entrevista."
     },
-    interview_scheduled: {
-        label: "ENTREVISTA PROGRAMADA",
-        icon: Video,
-        color: "#8b5cf6",
-        desc: "¡Felicidades! Tienes una entrevista virtual agendada. Revisa los detalles de conexión en el correo que se ha enviado a tu correo electrónico."
-    },
     virtual_scheduled: {
         label: "ENTREVISTA PROGRAMADA",
         icon: Video,
@@ -111,11 +109,23 @@ const friendlyStatusMap: Record<string, { label: string; icon: any; color: strin
         color: "#10b981",
         desc: "¡Bienvenido al equipo! Tu fecha de ingreso ha sido fijada. Prepara tu primer día."
     },
+    documents_pending: {
+        label: "DOCUMENTACIÓN PENDIENTE",
+        icon: FileText,
+        color: "#f59e0b",
+        desc: "Necesitamos que cargues tus documentos oficiales (RFC, CURP, Acta, etc.) para formalizar tu expediente de ingreso en la sección lateral."
+    },
+    documents_complete: {
+        label: "DOCUMENTACIÓN COMPLETA",
+        icon: ShieldCheck,
+        color: "#10b981",
+        desc: "Tus documentos han sido recibidos y están siendo validados por el equipo de RH."
+    },
     hired: {
         label: "CONTRATADO",
         icon: Zap,
         color: "#1d4ed8",
-        desc: "Proceso finalizado exitosamente. ¡Bienvenido oficialmente a la organización!"
+        desc: "¡Felicidades! Todo está listo. Bienvenido oficialmente al equipo."
     },
     rejected: {
         label: "PROCESO FINALIZADO",
@@ -127,8 +137,9 @@ const friendlyStatusMap: Record<string, { label: string; icon: any; color: strin
 
 const STAGES = [
     { key: 'validation', label: 'Validación', codes: ['new', 'validation', 'docs_validation', 'virtual_pending'] },
-    { key: 'interview', label: 'Entrevista', codes: ['interview_scheduled', 'virtual_scheduled', 'virtual_done'] },
-    { key: 'onboarding', label: 'Ingreso', codes: ['onboarding', 'final_docs', 'onboarding_scheduled', 'hired'] }
+    { key: 'interview', label: 'Entrevista', codes: ['virtual_scheduled', 'virtual_done'] },
+    { key: 'documentation', label: 'Documentación', codes: ['documents_pending', 'documents_complete', 'final_docs'] },
+    { key: 'onboarding', label: 'Ingreso', codes: ['onboarding', 'onboarding_scheduled', 'hired'] }
 ];
 
 export default function TrackApplication() {
@@ -140,6 +151,9 @@ export default function TrackApplication() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [uploading, setUploading] = useState<string | null>(null);
+    const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({});
+    const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
+    const [dragOver, setDragOver] = useState<string | null>(null);
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [previewName, setPreviewName] = useState<string>("");
 
@@ -171,18 +185,27 @@ export default function TrackApplication() {
 
             setApplication(app as any);
 
-            // Fetch required documents
+            // Fetch required documents (ONLY ACTIVE ONES)
             const { data: docs, error: docsError } = await supabase
                 .from("recruit_document_types")
                 .select(`
-                    id, 
-                    name, 
-                    is_required, 
+                    id,
+                    name,
+                    label,
+                    is_required,
                     stage
                 `)
+                .eq("is_active", true)
                 .order("name");
 
             if (docsError) throw docsError;
+
+            const isAdvancedStage = ['documents_pending', 'documents_complete', 'final_docs', 'onboarding', 'hired'].includes(app.status_key);
+            const visibleDocs = docs.filter(d =>
+                d.name !== 'solicitud_empleo' && (
+                    d.stage === 'application' || (isAdvancedStage && (d.stage === 'onboarding' || d.stage === 'post_interview'))
+                )
+            );
 
             // Fetch existing documents for this application
             const { data: existingDocs, error: existingError } = await supabase
@@ -192,7 +215,7 @@ export default function TrackApplication() {
 
             if (existingError) throw existingError;
 
-            const mergedDocs: DocumentInfo[] = docs.map(d => ({
+            const mergedDocs: DocumentInfo[] = visibleDocs.map(d => ({
                 ...d,
                 existing: existingDocs?.find(ed => ed.document_type_id === d.id) || null
             }));
@@ -211,55 +234,125 @@ export default function TrackApplication() {
         if (loadId) fetchApplication();
     }, [loadId]);
 
+    const ALLOWED_TYPES = ["application/pdf", "image/jpeg", "image/jpg", "image/png"];
+    const MAX_SIZE_MB = 10;
+
     const handleUpload = async (docTypeId: string, file: File) => {
         if (!application) return;
+
+        // Validate type
+        if (!ALLOWED_TYPES.includes(file.type)) {
+            setUploadErrors(prev => ({ ...prev, [docTypeId]: "Formato no válido. Usa PDF, JPG o PNG." }));
+            return;
+        }
+        // Validate size
+        if (file.size > MAX_SIZE_MB * 1024 * 1024) {
+            setUploadErrors(prev => ({ ...prev, [docTypeId]: `El archivo supera el límite de ${MAX_SIZE_MB} MB.` }));
+            return;
+        }
+
+        setUploadErrors(prev => { const n = { ...prev }; delete n[docTypeId]; return n; });
         setUploading(docTypeId);
+        setUploadSuccess(null);
 
         try {
             const fileExt = file.name.split('.').pop();
-            const fileName = `${application.id}/${docTypeId}_${Math.random().toString(36).substring(7)}.${fileExt}`;
-            const filePath = `documents/${fileName}`;
+            const fileName = `${docTypeId}_${Math.random().toString(36).substring(7)}.${fileExt}`;
+            const filePath = `applications/${application.id}/${fileName}`;
 
             const { error: uploadError } = await supabase.storage
-                .from("candidates_docs")
+                .from("recruit-docs")
                 .upload(filePath, file);
 
             if (uploadError) throw uploadError;
 
-            // Upsert document record
-            const { error: dbError } = await supabase
+            // Check if a record already exists for this doc type
+            const { data: existing } = await supabase
                 .from("recruit_application_documents")
-                .upsert({
-                    application_id: application.id,
-                    document_type_id: docTypeId,
-                    storage_path: filePath,
-                    validation_status: 'under_review',
-                    updated_at: new Date().toISOString()
-                }, { onConflict: 'application_id,document_type_id' });
+                .select("id")
+                .eq("application_id", application.id)
+                .eq("document_type_id", docTypeId)
+                .maybeSingle();
+
+            let dbError;
+            if (existing?.id) {
+                ({ error: dbError } = await supabase
+                    .from("recruit_application_documents")
+                    .update({ storage_path: filePath, validation_status: 'under_review' })
+                    .eq("id", existing.id));
+            } else {
+                ({ error: dbError } = await supabase
+                    .from("recruit_application_documents")
+                    .insert({
+                        application_id: application.id,
+                        document_type_id: docTypeId,
+                        storage_path: filePath,
+                        validation_status: 'under_review',
+                    }));
+            }
 
             if (dbError) throw dbError;
 
+            setUploadSuccess(docTypeId);
+            setTimeout(() => setUploadSuccess(null), 3000);
+
+            // Check BEFORE fetchApplication whether this upload completes all required docs
+            const requiredDocs = documents.filter(d => d.is_required);
+            const wasComplete = requiredDocs.length > 0 && requiredDocs.every(d => !!d.existing);
+            const isNowComplete = requiredDocs.length > 0 && requiredDocs.every(d =>
+                d.id === docTypeId ? true : !!d.existing
+            );
+
             await fetchApplication();
+
+            // Notify the recruiter once — only when the last required doc is uploaded
+            if (!wasComplete && isNowComplete) {
+                try {
+                    await fetch(`${supabaseUrl}/functions/v1/send_email`, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "apikey": supabaseAnonKey!,
+                        },
+                        body: JSON.stringify({
+                            application_id: application.id,
+                            template_key: "all_docs_uploaded",
+                            to_recruiter: true,
+                            variables: {
+                                crm_url: `${window.location.origin}/crm/applications/${application.id}`,
+                            },
+                        }),
+                    });
+                } catch (notifyErr) {
+                    console.warn("No se pudo notificar al reclutador:", notifyErr);
+                }
+            }
         } catch (err: any) {
             console.error("Upload error:", err);
-            alert("Error al subir archivo");
+            setUploadErrors(prev => ({ ...prev, [docTypeId]: err?.message || "Error al subir el archivo. Intenta de nuevo." }));
         } finally {
             setUploading(null);
         }
     };
 
+    const handleFileDrop = (docTypeId: string, e: React.DragEvent) => {
+        e.preventDefault();
+        setDragOver(null);
+        const file = e.dataTransfer.files?.[0];
+        if (file) handleUpload(docTypeId, file);
+    };
+
     const handleDocumentPreview = async (path: string, name: string) => {
         try {
             const { data, error } = await supabase.storage
-                .from("candidates_docs")
+                .from("recruit-docs")
                 .createSignedUrl(path, 3600);
 
             if (error) throw error;
             setPreviewName(name);
             setPreviewUrl(data.signedUrl);
-        } catch (err) {
-            console.error("Preview error:", err);
-            alert("No se pudo generar el enlace de previsualización.");
+        } catch (_err) {
+            setError("No se pudo cargar la vista previa del documento. Intenta de nuevo.");
         }
     };
 
@@ -272,7 +365,7 @@ export default function TrackApplication() {
         return (
             <section className="container-full" style={{ minHeight: '100vh', display: 'flex', justifyContent: 'center', paddingTop: '8rem' }}>
                 <InteractiveStars />
-                <div className="pro-card" style={{
+                <div className="pro-card track-search-card" style={{
                     maxWidth: '600px',
                     width: '100%',
                     textAlign: 'center',
@@ -289,7 +382,7 @@ export default function TrackApplication() {
                         INGRESA EL IDENTIFICADOR DE TU POSTULACIÓN QUE RECIBISTE POR CORREO ELECTRÓNICO.
                     </p>
 
-                    <div className="flex flex-col" style={{ gap: '2.5rem' }}>
+                    <div className="flex flex-col" style={{ gap: '1.5rem' }}>
                         <input
                             className="glass-input compact"
                             placeholder="EJ: 22975822-A1A5..."
@@ -341,8 +434,8 @@ export default function TrackApplication() {
                         <div className="doc-preview-header">
                             <strong>{previewName}</strong>
                             <div style={{ display: 'flex', gap: '0.5rem' }}>
-                                <a className="btn-ghost" href={previewUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.7rem' }}>↗ Abrir en nueva pestaña</a>
-                                <button className="btn-ghost" type="button" style={{ fontSize: '0.7rem' }} onClick={() => setPreviewUrl(null)}>✕ Cerrar</button>
+                                <a className="btn-ghost" href={previewUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}><ExternalLink size={12} /> Abrir en nueva pestaña</a>
+                                <button className="btn-ghost" type="button" style={{ fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }} onClick={() => setPreviewUrl(null)}><XCircle size={12} /> Cerrar</button>
                             </div>
                         </div>
                         <div className="doc-preview-body">
@@ -357,13 +450,13 @@ export default function TrackApplication() {
             <div className="animate-in fade-in duration-1000" style={{ maxWidth: '1200px', margin: '0 auto', padding: '0 2rem', position: 'relative', zIndex: 10 }}>
 
                 {/* --- HEADER --- */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '3rem' }}>
-                    <div>
+                <div className="track-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '3rem' }}>
+                    <div style={{ minWidth: 0 }}>
                         <span className="mono color-accent" style={{ fontSize: '0.6rem', display: 'block', marginBottom: '0.5rem' }}>// EXPEDIENTE DIGITAL</span>
-                        <h1 className="outfit-black" style={{ fontSize: 'clamp(2.5rem, 5vw, 4rem)', lineHeight: 0.9, color: 'var(--text-main)' }}>
+                        <h1 className="outfit-black track-header-title" style={{ fontSize: 'clamp(2.5rem, 5vw, 4rem)', lineHeight: 0.9, color: 'var(--text-main)' }}>
                             HOLA, {firstName}.
                         </h1>
-                        <div style={{ display: 'flex', gap: '2rem', marginTop: '1.2rem', alignItems: 'center' }}>
+                        <div className="track-header-meta" style={{ display: 'flex', gap: '2rem', marginTop: '1.2rem', alignItems: 'center' }}>
                             <p className="mono color-dim" style={{ fontSize: '0.7rem' }}>
                                 VACANTE: <span style={{ color: 'var(--text-main)', fontWeight: 700 }}>{jobTitle}</span>
                             </p>
@@ -375,21 +468,21 @@ export default function TrackApplication() {
                             )}
                         </div>
                     </div>
-                    <button className="btn-ghost" onClick={() => setLoadId("")} style={{ fontSize: '0.6rem', padding: '0.6rem 1.2rem', background: 'var(--bg-card)', color: 'var(--text-main)' }}>
+                    <button className="btn-ghost track-header-btn" onClick={() => setLoadId("")} style={{ fontSize: '0.6rem', padding: '0.6rem 1.2rem', background: 'var(--bg-card)', color: 'var(--text-main)', flexShrink: 0 }}>
                         <Search size={14} style={{ marginRight: '0.5rem' }} /> CONSULTAR OTRO
                     </button>
                 </div>
 
                 {loading && (
-                    <div style={{ padding: '4rem', textAlign: 'center' }}>
-                        <Clock className="animate-spin" size={32} style={{ color: 'var(--accent)' }} />
+                    <div style={{ position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(4px)' }}>
+                        <Clock className="animate-spin" size={36} style={{ color: 'var(--accent)' }} />
                     </div>
                 )}
 
             </div>
 
             {/* --- STEPPER (HORIZONTAL) --- */}
-            <div style={{
+            <div className="track-stage-tabs" style={{
                 display: 'flex',
                 flexWrap: 'wrap',
                 background: 'var(--bg-card)',
@@ -397,20 +490,22 @@ export default function TrackApplication() {
                 borderRadius: '24px',
                 marginBottom: '3rem',
                 overflow: 'hidden',
-                boxShadow: '0 4px 20px rgba(0,0,0,0.2)'
+                boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
+                position: 'relative',
+                zIndex: 1
             }}>
                 {STAGES.map((s, idx) => {
                     const isActive = idx <= currentStepIndex;
                     const isCurrent = idx === currentStepIndex;
                     const isPast = idx < currentStepIndex;
 
-                    const StageIcons: any = { Validación: ShieldCheck, Entrevista: Video, Ingreso: Zap };
+                    const StageIcons: any = { Validación: ShieldCheck, Entrevista: Video, Documentación: FileText, Ingreso: Zap };
                     const Icon = StageIcons[s.label] || Check;
 
                     return (
-                        <div key={s.key} style={{
+                        <div key={s.key} className="track-stage-tab" style={{
                             flex: 1,
-                            minWidth: '200px',
+                            minWidth: '160px',
                             padding: '1.5rem 2rem',
                             borderRight: idx === STAGES.length - 1 ? 'none' : '1px solid var(--border-dim)',
                             borderBottom: '1px solid var(--border-dim)',
@@ -420,6 +515,22 @@ export default function TrackApplication() {
                             gap: '1rem',
                             position: 'relative'
                         }}>
+                                {/* Número como watermark de fondo */}
+                            <span style={{
+                                position: 'absolute',
+                                bottom: '-0.15em',
+                                right: '0.1em',
+                                fontSize: '3.5rem',
+                                fontWeight: 900,
+                                fontFamily: 'var(--font-display)',
+                                lineHeight: 1,
+                                color: isCurrent ? 'var(--accent)' : 'var(--text-main)',
+                                opacity: isCurrent ? 0.12 : 0.05,
+                                pointerEvents: 'none',
+                                userSelect: 'none',
+                                letterSpacing: '-0.05em',
+                            }}>0{idx + 1}</span>
+
                             <div style={{
                                 width: '40px',
                                 height: '40px',
@@ -429,12 +540,13 @@ export default function TrackApplication() {
                                 justifyContent: 'center',
                                 background: isCurrent ? 'var(--accent)' : (isActive ? 'var(--text-main)' : 'var(--bg-accent)'),
                                 color: (isActive) ? 'var(--bg-pure)' : 'var(--text-dim)',
-                                boxShadow: isCurrent ? '0 0 20px var(--accent-glow)' : 'none'
+                                boxShadow: isCurrent ? '0 0 20px var(--accent-glow)' : 'none',
+                                position: 'relative',
+                                zIndex: 1,
                             }}>
                                 {isPast ? <Check size={18} strokeWidth={3} /> : <Icon size={18} />}
                             </div>
-                            <div>
-                                <span className="mono" style={{ fontSize: '0.5rem', display: 'block', opacity: 0.5 }}>0{idx + 1}</span>
+                            <div className="track-tab-label" style={{ position: 'relative', zIndex: 1 }}>
                                 <span className="outfit-bold" style={{ fontSize: '0.75rem', textTransform: 'uppercase', color: isCurrent ? 'var(--accent)' : 'var(--text-main)' }}>{s.label}</span>
                             </div>
                             {isCurrent && <div style={{ position: 'absolute', bottom: 0, left: 0, width: '100%', height: '2px', background: 'var(--accent)' }}></div>}
@@ -443,12 +555,13 @@ export default function TrackApplication() {
                 })}
             </div>
 
-            {/* --- MAIN GRID 8:4 --- */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: '2.5rem' }}>
+            {/* --- MAIN GRID --- */}
+            {/* When documents are the focus, flip to 5:7; otherwise 8:4 */}
+            <div className="track-main-grid" style={{ display: 'grid', gridTemplateColumns: STAGES[currentStepIndex]?.key === 'documentation' ? '5fr 7fr' : '1fr', gap: '2.5rem' }}>
 
-                {/* STATUS CARD (8/12) */}
-                <div style={{ gridColumn: 'span 8', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
-                    <div style={{
+                {/* STATUS CARD */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+                    <div className="track-status-card" style={{
                         background: 'var(--bg-card)',
                         border: '1px solid var(--border-dim)',
                         borderRadius: '32px',
@@ -474,7 +587,7 @@ export default function TrackApplication() {
                             </p>
 
                             {application?.status_key.includes('virtual') && application.meet_link && (
-                                <div style={{
+                                <div className="track-meet-card" style={{
                                     marginTop: '3rem',
                                     padding: '2.5rem',
                                     borderRadius: '24px',
@@ -504,87 +617,229 @@ export default function TrackApplication() {
                                     </p>
                                 </div>
                             )}
+
+                            {application?.status_key === 'documents_pending' && (
+                                <div style={{ marginTop: '2.5rem', padding: '2rem', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: '20px' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+                                        <Upload size={20} style={{ color: '#f59e0b', flexShrink: 0 }} />
+                                        <h3 className="outfit-bold" style={{ fontSize: '1rem', color: '#f59e0b' }}>ACCIÓN REQUERIDA</h3>
+                                    </div>
+                                    <p className="mono color-dim" style={{ fontSize: '0.7rem', lineHeight: 1.6 }}>
+                                        Sube tus documentos en la sección de la derecha.<br />
+                                        Cada archivo debe estar en formato <strong>PDF, JPG o PNG</strong>.<br />
+                                        Una vez validados por RH, recibirás confirmación por correo.
+                                    </p>
+                                    <div style={{ marginTop: '1rem', display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                                        <span className="mono" style={{ fontSize: '0.55rem', background: 'rgba(16,185,129,0.12)', color: '#10b981', padding: '3px 10px', borderRadius: '20px', border: '1px solid rgba(16,185,129,0.25)' }}>
+                                            {documents.filter(d => d.existing?.validation_status === 'validated').length} validados
+                                        </span>
+                                        <span className="mono" style={{ fontSize: '0.55rem', background: 'rgba(61,90,254,0.1)', color: '#3d5afe', padding: '3px 10px', borderRadius: '20px', border: '1px solid rgba(61,90,254,0.25)' }}>
+                                            {documents.filter(d => d.existing?.validation_status === 'under_review' || d.existing?.validation_status === 'pending').length} en revisión
+                                        </span>
+                                        {documents.filter(d => d.existing?.validation_status === 'rejected').length > 0 && (
+                                            <span className="mono" style={{ fontSize: '0.55rem', background: 'rgba(239,68,68,0.1)', color: '#ef4444', padding: '3px 10px', borderRadius: '20px', border: '1px solid rgba(239,68,68,0.3)' }}>
+                                                {documents.filter(d => d.existing?.validation_status === 'rejected').length} rechazados — sube de nuevo
+                                            </span>
+                                        )}
+                                        <span className="mono" style={{ fontSize: '0.55rem', background: 'rgba(255,255,255,0.04)', color: 'var(--text-dim)', padding: '3px 10px', borderRadius: '20px', border: '1px solid var(--border-dim)' }}>
+                                            {documents.filter(d => !d.existing).length} pendientes
+                                        </span>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>
 
-                {/* DOCUMENTS SIDEBAR (4/12) */}
-                <div style={{ gridColumn: 'span 4', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                {/* DOCUMENTS PANEL — solo visible en etapa de documentación */}
+                {STAGES[currentStepIndex]?.key === 'documentation' && <div className="track-docs-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 0.5rem' }}>
-                        <span className="mono color-accent" style={{ fontSize: '0.65rem' }}>// DOCUMENTACIÓN</span>
-                        <span className="mono color-dim" style={{ fontSize: '0.6rem', opacity: 0.5 }}>{documents.filter(d => !!d.existing).length} ARCHIVOS</span>
+                        <div>
+                            <span className="mono color-accent" style={{ fontSize: '0.65rem' }}>// DOCUMENTACIÓN</span>
+                            {['documents_pending'].includes(application?.status_key || '') && (
+                                <p className="mono color-dim" style={{ fontSize: '0.6rem', marginTop: '0.25rem' }}>
+                                    Sube cada archivo en formato PDF, JPG o PNG · máx. 10 MB
+                                </p>
+                            )}
+                        </div>
+                        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                            <span className="mono" style={{ fontSize: '0.6rem', color: '#10b981' }}>{documents.filter(d => d.existing?.validation_status === 'validated').length} validados</span>
+                            <span className="mono color-dim" style={{ fontSize: '0.6rem', opacity: 0.5 }}>{documents.filter(d => !!d.existing).length}/{documents.length} subidos</span>
+                        </div>
                     </div>
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                        {documents.filter(d => !!d.existing).map(doc => {
-                            const isUploaded = !!doc.existing;
-                            const status = doc.existing?.validation_status;
-                            const canEdit = status === 'pending' || status === 'rejected';
+                        {documents
+                            .filter(d => {
+                                if (d.existing) return true;
+                                const currentStage = STAGES[currentStepIndex]?.key;
+                                if (d.stage === 'application' || d.stage === 'validation') return true;
+                                if (d.stage === 'onboarding' && (currentStage === 'documentation' || currentStage === 'onboarding')) return true;
+                                return false;
+                            })
+                            .map(doc => {
+                                const isUploaded = !!doc.existing;
+                                const status = doc.existing?.validation_status;
+                                const canEdit = !isUploaded || status === 'pending' || status === 'rejected';
+                                const isDocUploading = uploading === doc.id;
+                                const isDragging = dragOver === doc.id;
+                                const docError = uploadErrors[doc.id];
+                                const docLabel = doc.label || doc.name;
 
-                            return (
-                                <div key={doc.id} style={{
-                                    background: 'var(--bg-card)',
-                                    border: '1px solid var(--border-dim)',
-                                    borderRadius: '20px',
-                                    padding: '1.5rem',
-                                    transition: 'all 0.3s ease',
-                                    boxShadow: '0 2px 10px rgba(0,0,0,0.1)'
-                                }}>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                        <div
-                                            style={{ display: 'flex', alignItems: 'center', gap: '1.2rem', cursor: isUploaded ? 'pointer' : 'default', flex: 1 }}
-                                            onClick={() => isUploaded && handleDocumentPreview(doc.existing!.storage_path!, doc.name)}
-                                            className="hover-accent"
-                                        >
+                                // Border color based on status
+                                const borderColor = status === 'validated' ? 'rgba(16,185,129,0.4)'
+                                    : status === 'rejected' ? 'rgba(239,68,68,0.4)'
+                                        : status === 'under_review' ? 'rgba(61,90,254,0.3)'
+                                            : isUploaded ? 'var(--border-dim)'
+                                                : 'var(--border-dim)';
+
+                                return (
+                                    <div key={doc.id} className="track-doc-card" style={{
+                                        background: 'var(--bg-card)',
+                                        border: `1px solid ${borderColor}`,
+                                        borderRadius: '20px',
+                                        padding: '1.5rem',
+                                        transition: 'all 0.3s ease',
+                                        boxShadow: status === 'validated' ? '0 0 0 1px rgba(16,185,129,0.15)' : '0 2px 10px rgba(0,0,0,0.1)',
+                                        position: 'relative',
+                                        zIndex: 1
+                                    }}>
+                                        {/* Header row: icon + name + status badge */}
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
                                             <div style={{
                                                 width: '44px',
                                                 height: '44px',
+                                                flexShrink: 0,
                                                 borderRadius: '12px',
                                                 display: 'flex',
                                                 alignItems: 'center',
                                                 justifyContent: 'center',
-                                                background: 'var(--bg-soft)',
-                                                color: isUploaded ? 'var(--accent)' : 'var(--text-dim)',
-                                                border: '1px solid var(--border-dim)'
-                                            }}>
+                                                background: status === 'validated' ? 'rgba(16,185,129,0.15)' : status === 'rejected' ? 'rgba(239,68,68,0.1)' : 'var(--bg-soft)',
+                                                color: status === 'validated' ? '#10b981' : status === 'rejected' ? '#ef4444' : isUploaded ? 'var(--accent)' : 'var(--text-dim)',
+                                                border: '1px solid var(--border-dim)',
+                                                cursor: isUploaded ? 'pointer' : 'default'
+                                            }}
+                                                onClick={() => isUploaded && doc.existing?.storage_path && handleDocumentPreview(doc.existing.storage_path, docLabel)}
+                                            >
                                                 <FileText size={20} />
                                             </div>
-                                            <div>
-                                                <h4 className="outfit-bold" style={{ fontSize: '0.85rem', textTransform: 'uppercase', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                                    {doc.name}
-                                                    {isUploaded && <ExternalLink size={10} style={{ opacity: 0.5 }} />}
+                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                                <h4 className="outfit-bold" style={{
+                                                    fontSize: '0.82rem',
+                                                    textTransform: 'uppercase',
+                                                    color: 'var(--text-main)',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    gap: '0.4rem',
+                                                    whiteSpace: 'nowrap',
+                                                    overflow: 'hidden',
+                                                    textOverflow: 'ellipsis'
+                                                }}>
+                                                    {docLabel}
+                                                    {doc.is_required && <span className="mono" style={{ fontSize: '0.5rem', color: '#ef4444', opacity: 0.7 }}>*</span>}
+                                                    {isUploaded && <ExternalLink size={10} style={{ opacity: 0.4, flexShrink: 0, cursor: 'pointer' }} onClick={() => doc.existing?.storage_path && handleDocumentPreview(doc.existing.storage_path, docLabel)} />}
                                                 </h4>
-                                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' }}>
+                                                <div style={{ marginTop: '0.3rem' }}>
                                                     {status === 'validated' ? (
-                                                        <span className="mono" style={{ fontSize: '0.55rem', color: '#10b981', background: 'rgba(16, 185, 129, 0.1)', padding: '2px 6px', borderRadius: '4px' }}>✓ OK</span>
+                                                        <span className="mono" style={{ fontSize: '0.55rem', color: '#10b981', background: 'rgba(16,185,129,0.12)', padding: '2px 8px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                                            <Check size={10} strokeWidth={3} /> VALIDADO
+                                                        </span>
                                                     ) : status === 'rejected' ? (
-                                                        <span className="mono" style={{ fontSize: '0.55rem', color: '#ef4444', background: 'rgba(239, 68, 68, 0.1)', padding: '2px 6px', borderRadius: '4px' }}>✗ RECHAZADO</span>
+                                                        <span className="mono" style={{ fontSize: '0.55rem', color: '#ef4444', background: 'rgba(239,68,68,0.1)', padding: '2px 8px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                                            <XCircle size={10} /> RECHAZADO — sube de nuevo
+                                                        </span>
                                                     ) : status === 'under_review' ? (
-                                                        <span className="mono" style={{ fontSize: '0.55rem', color: '#3d5afe', background: 'rgba(61, 90, 254, 0.1)', padding: '2px 6px', borderRadius: '4px', border: '1px solid #3d5afe' }}>👁 EN REVISIÓN</span>
+                                                        <span className="mono" style={{ fontSize: '0.55rem', color: '#3d5afe', background: 'rgba(61,90,254,0.1)', padding: '2px 8px', borderRadius: '4px', border: '1px solid rgba(61,90,254,0.3)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                                            <Clock size={10} /> EN REVISIÓN
+                                                        </span>
                                                     ) : isUploaded ? (
-                                                        <span className="mono color-dim" style={{ fontSize: '0.55rem', background: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: '4px', color: 'var(--text-dim)' }}>⏳ RECIBIDO</span>
+                                                        <span className="mono color-dim" style={{ fontSize: '0.55rem', background: 'rgba(255,255,255,0.05)', padding: '2px 8px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                                            <Clock size={9} /> RECIBIDO
+                                                        </span>
                                                     ) : (
-                                                        <span className="mono" style={{ fontSize: '0.55rem', opacity: 0.4, color: 'var(--text-dim)' }}>PENDIENTE</span>
+                                                        <span className="mono" style={{ fontSize: '0.55rem', color: '#f59e0b', opacity: 0.8 }}>
+                                                            PENDIENTE DE SUBIR
+                                                        </span>
                                                     )}
                                                 </div>
                                             </div>
+                                            {/* Quick replace button for already-uploaded docs (not in pending mode) */}
+                                            {canEdit && isUploaded && (
+                                                <label style={{ flexShrink: 0, width: '36px', height: '36px', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-soft)', border: '1px solid var(--border-dim)', cursor: 'pointer', opacity: 0.7 }}>
+                                                    <input type="file" hidden accept=".pdf,.jpg,.jpeg,.png" onChange={e => e.target.files?.[0] && handleUpload(doc.id, e.target.files[0])} disabled={!!uploading} />
+                                                    <Pencil size={13} style={{ color: 'var(--text-dim)' }} />
+                                                </label>
+                                            )}
                                         </div>
 
-                                        {canEdit && (
-                                            <label className="btn-ghost icon-only" style={{ width: '40px', height: '40px', padding: 0, borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-soft)', border: '1px solid var(--border-dim)', cursor: 'pointer' }}>
-                                                <input
-                                                    type="file"
-                                                    hidden
-                                                    onChange={e => e.target.files?.[0] && handleUpload(doc.id, e.target.files[0])}
-                                                    disabled={!!uploading}
-                                                />
-                                                {uploading === doc.id ? <Clock size={16} className="animate-spin" /> : <Pencil size={18} style={{ color: 'var(--text-main)' }} />}
-                                            </label>
+                                        {/* Validation notes (if rejected) */}
+                                        {status === 'rejected' && doc.existing?.validation_notes && (
+                                            <div style={{ marginTop: '0.75rem', padding: '0.6rem 0.8rem', background: 'rgba(239,68,68,0.07)', borderRadius: '8px', border: '1px solid rgba(239,68,68,0.2)' }}>
+                                                <p className="mono" style={{ fontSize: '0.6rem', color: '#ef4444' }}>
+                                                    MOTIVO: {doc.existing.validation_notes}
+                                                </p>
+                                            </div>
+                                        )}
+
+                                        {/* Upload drop zone — shown when doc is not yet uploaded (or rejected) */}
+                                        {canEdit && !isUploaded && (
+                                            <div
+                                                onDragEnter={e => { e.preventDefault(); setDragOver(doc.id); }}
+                                                onDragOver={e => { e.preventDefault(); setDragOver(doc.id); }}
+                                                onDragLeave={() => setDragOver(null)}
+                                                onDrop={e => handleFileDrop(doc.id, e)}
+                                                style={{
+                                                    marginTop: '1rem',
+                                                    border: `2px dashed ${isDragging ? 'var(--accent)' : 'var(--border-dim)'}`,
+                                                    borderRadius: '14px',
+                                                    padding: '1.25rem',
+                                                    textAlign: 'center',
+                                                    background: isDragging ? 'rgba(var(--accent-rgb), 0.06)' : 'var(--bg-soft)',
+                                                    transition: 'all 0.2s ease',
+                                                    cursor: isDocUploading ? 'not-allowed' : 'pointer'
+                                                }}
+                                            >
+                                                <label style={{ cursor: isDocUploading ? 'not-allowed' : 'pointer', display: 'block' }}>
+                                                    <input
+                                                        type="file"
+                                                        hidden
+                                                        accept=".pdf,.jpg,.jpeg,.png"
+                                                        onChange={e => e.target.files?.[0] && handleUpload(doc.id, e.target.files[0])}
+                                                        disabled={!!uploading}
+                                                    />
+                                                    {isDocUploading ? (
+                                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.6rem' }}>
+                                                            <Clock size={18} className="animate-spin" style={{ color: 'var(--accent)' }} />
+                                                            <span className="mono" style={{ fontSize: '0.65rem', color: 'var(--accent)' }}>SUBIENDO...</span>
+                                                        </div>
+                                                    ) : uploadSuccess === doc.id ? (
+                                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.6rem' }}>
+                                                            <CheckCircle2 size={18} style={{ color: '#10b981' }} />
+                                                            <span className="mono" style={{ fontSize: '0.65rem', color: '#10b981' }}>¡ARCHIVO RECIBIDO!</span>
+                                                        </div>
+                                                    ) : (
+                                                        <>
+                                                            <Upload size={22} style={{ color: isDragging ? 'var(--accent)' : 'var(--text-dim)', marginBottom: '0.5rem' }} />
+                                                            <p className="outfit-bold" style={{ fontSize: '0.75rem', color: isDragging ? 'var(--accent)' : 'var(--text-main)', marginBottom: '0.2rem' }}>
+                                                                {isDragging ? 'Suelta el archivo aquí' : 'Haz clic o arrastra el archivo aquí'}
+                                                            </p>
+                                                            <p className="mono color-dim" style={{ fontSize: '0.55rem' }}>PDF · JPG · PNG — máx. 10 MB</p>
+                                                        </>
+                                                    )}
+                                                </label>
+                                            </div>
+                                        )}
+
+                                        {/* Error message */}
+                                        {docError && (
+                                            <div style={{ marginTop: '0.6rem', display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 0.75rem', background: 'rgba(239,68,68,0.08)', borderRadius: '8px', border: '1px solid rgba(239,68,68,0.25)' }}>
+                                                <AlertCircle size={13} style={{ color: '#ef4444', flexShrink: 0 }} />
+                                                <p className="mono" style={{ fontSize: '0.6rem', color: '#ef4444' }}>{docError}</p>
+                                            </div>
                                         )}
                                     </div>
-                                </div>
-                            );
-                        })}
+                                );
+                            })}
 
                         {documents.length === 0 && (
                             <div style={{ padding: '3rem', background: 'var(--bg-card)', border: '1px dashed var(--border-dim)', borderRadius: '24px', textAlign: 'center', opacity: 0.6 }}>
@@ -593,7 +848,7 @@ export default function TrackApplication() {
                             </div>
                         )}
                     </div>
-                </div>
+                </div>}
             </div>
 
             <div style={{ marginTop: '5rem', textAlign: 'center', opacity: 0.3 }}>
@@ -601,6 +856,7 @@ export default function TrackApplication() {
                     ELITE CORE v5.0 // SESSION_SECURE_{new Date().getFullYear()}
                 </p>
             </div>
-        </section >
+        </section>
+
     );
 }

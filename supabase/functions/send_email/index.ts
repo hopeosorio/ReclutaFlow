@@ -17,6 +17,33 @@ const SMTP_PASS = Deno.env.get("SMTP_PASS") ?? "";
 const SMTP_FROM = Deno.env.get("SMTP_FROM") ?? "";
 const SMTP_SECURE = (Deno.env.get("SMTP_SECURE") ?? "true").toLowerCase() !== "false";
 const DEFAULT_TIMEZONE = Deno.env.get("DEFAULT_TIMEZONE") ?? "America/Mexico_City";
+const FRONTEND_URL = Deno.env.get("FRONTEND_URL") ?? "http://localhost:5173";
+
+// --- Deno 2.x Compatibility Patch ---
+// Restores legacy functions removed in Deno 2 that older libraries still use
+if (typeof (Deno as any).writeAll !== 'function') {
+  (Deno as any).writeAll = async (writer: any, data: Uint8Array) => {
+    let offset = 0;
+    while (offset < data.byteLength) {
+      const n = await writer.write(data.subarray(offset));
+      if (n === 0) break;
+      offset += n;
+    }
+  };
+}
+if (typeof (Deno as any).copy !== 'function') {
+  (Deno as any).copy = async (src: any, dst: any) => {
+    let count = 0;
+    const buf = new Uint8Array(32 * 1024);
+    while (true) {
+      const n = await src.read(buf);
+      if (n === null || n === 0) break;
+      await (Deno as any).writeAll(dst, buf.subarray(0, n));
+      count += n;
+    }
+    return count;
+  };
+}
 
 function parseFromAddress(value: string): { email: string; name?: string } | null {
   const trimmed = value.trim();
@@ -128,7 +155,7 @@ serve(async (req: Request) => {
     }
 
     const bodyText = await req.text();
-    let payload: Record<string, unknown>;
+    let payload: any;
     try {
       payload = JSON.parse(bodyText);
     } catch (err) {
@@ -138,10 +165,36 @@ serve(async (req: Request) => {
       });
     }
 
-    const missing = requireFields(payload, ["application_id", "template_key"]);
-    if (missing.length > 0) {
-      return errorResponse("Missing required fields", 400, { missing, receivedPayload: payload });
+    // --- Improved Webhook Detection ---
+    const tableName = String(payload.table || "").replace(/^public\./, "");
+    const isWebhook = !!(payload.type && payload.record && tableName === 'recruit_message_logs');
+
+    if (isWebhook) {
+      console.log(`[send_email] Webhook Event Detected: ${payload.type} on ${payload.table}`);
     }
+
+    // Extract ID and Key depending on caller (Frontend vs Webhook)
+    if (isWebhook && payload.record.status === 'sent') {
+      return jsonResponse({ ok: true, message: "Email already sent, skipping to prevent loop." });
+    }
+
+    const applicationId = (isWebhook ? payload.record.application_id : payload.application_id) as string;
+    const templateKey = (isWebhook ? null : payload.template_key) as string | null;
+    const templateId = (isWebhook ? payload.record.template_id : null) as string | null;
+    const webhookLogId = isWebhook ? payload.record.id : null;
+
+    if (!applicationId || (!templateKey && !templateId)) {
+      console.warn("[send_email] Validation Failed:", { applicationId, templateKey, templateId, isWebhook });
+      return errorResponse("Missing required fields", 400, {
+        applicationId,
+        templateKey,
+        templateId,
+        isWebhook,
+        receivedPayload: payload
+      });
+    }
+
+    console.log(`[send_email] Processing request for App: ${applicationId}, Template: ${templateId || templateKey}`);
 
     const supabase = getAdminClient();
     let senderId = "system";
@@ -163,10 +216,10 @@ serve(async (req: Request) => {
       }
     }
 
-    const applicationId = payload.application_id as string;
+    // ID is already extracted above via isWebhook logic
     // Skip RPC access check for system/internal calls as they bypass RLS anyway
     if (senderId !== "system") {
-      const { data: access, error: accessError } = await supabase.rpc("can_access_application", {
+      const { data: access, error: accessError } = await userSupabase.rpc("can_access_application", {
         app_id: applicationId,
       });
 
@@ -175,23 +228,30 @@ serve(async (req: Request) => {
       }
     }
 
-    const { data: template, error: templateError } = await supabase
+    const templateQuery = supabase
       .from("recruit_message_templates")
       .select("id, subject, body_md")
-      .eq("template_key", payload.template_key)
-      .eq("is_active", true)
-      .single();
+      .eq("is_active", true);
+
+    if (templateId) {
+      templateQuery.eq("id", templateId);
+    } else {
+      templateQuery.eq("template_key", templateKey);
+    }
+
+    const { data: template, error: templateError } = await templateQuery.single();
 
     if (templateError || !template) {
       return errorResponse("Template not found", 404, templateError?.message);
     }
 
-    let toAddress = asString(payload.to_address);
+    let toAddress = asString(isWebhook ? payload.record?.to_address : payload.to_address);
     let personName = null as string | null;
+    const toRecruiter = payload.to_recruiter === true;
 
     const { data: application, error: applicationError } = await supabase
       .from("recruit_applications")
-      .select("candidate_id, job_posting_id, assigned_to")
+      .select("candidate_id, job_posting_id, assigned_to, meet_link")
       .eq("id", applicationId)
       .single();
 
@@ -199,29 +259,40 @@ serve(async (req: Request) => {
       return errorResponse("Application not found", 404, applicationError?.message);
     }
 
-    if (!toAddress || !personName) {
-      const { data: candidate, error: candidateError } = await supabase
+    // Always resolve candidate name (used in templates even when sending to recruiter)
+    {
+      const { data: candidate } = await supabase
         .from("recruit_candidates")
         .select("person_id")
         .eq("id", application.candidate_id)
-        .single();
+        .maybeSingle();
 
-      if (candidateError || !candidate) {
-        return errorResponse("Candidate not found", 404, candidateError?.message);
+      if (candidate) {
+        const { data: person } = await supabase
+          .from("recruit_persons")
+          .select("first_name, last_name, email")
+          .eq("id", candidate.person_id)
+          .maybeSingle();
+
+        if (person) {
+          personName = `${person.first_name ?? ""} ${person.last_name ?? ""}`.trim();
+          if (!toAddress && !toRecruiter) {
+            toAddress = person.email;
+          }
+        }
       }
+    }
 
-      const { data: person, error: personError } = await supabase
-        .from("recruit_persons")
-        .select("first_name, last_name, email")
-        .eq("id", candidate.person_id)
-        .single();
-
-      if (personError || !person) {
-        return errorResponse("Person not found", 404, personError?.message);
+    // If to_recruiter is requested, override toAddress with the assigned recruiter's email
+    if (toRecruiter) {
+      if (!application.assigned_to) {
+        return errorResponse("No recruiter assigned to this application", 400);
       }
-
-      toAddress = toAddress ?? person.email;
-      personName = `${person.first_name ?? ""} ${person.last_name ?? ""}`.trim();
+      const { data: { user: recruiterUser }, error: recruiterError } = await supabase.auth.admin.getUserById(application.assigned_to);
+      if (recruiterError || !recruiterUser?.email) {
+        return errorResponse("Could not resolve recruiter email", 500, recruiterError?.message);
+      }
+      toAddress = recruiterUser.email;
     }
 
     if (!toAddress) {
@@ -282,7 +353,7 @@ serve(async (req: Request) => {
 
     const { data: onboarding } = await supabase
       .from("recruit_onboarding_plans")
-      .select("scheduled_at, location, dress_code, host_name")
+      .select("scheduled_at, location, dress_code, host_name, notes")
       .eq("application_id", applicationId)
       .maybeSingle();
 
@@ -291,13 +362,18 @@ serve(async (req: Request) => {
     onboardingLocation = onboarding?.location ?? "";
     dressCode = onboarding?.dress_code ?? "";
     hostName = onboarding?.host_name ?? "";
+    const onboardingNotes = onboarding?.notes ?? "";
 
-    const rawVariables = (payload.variables ?? {}) as Record<string, unknown>;
+    const rawVariables = (isWebhook ? (payload.record?.variables ?? {}) : (payload.variables ?? {})) as Record<string, unknown>;
     const variables = Object.fromEntries(
-      Object.entries(rawVariables).map(([key, value]) => [key, value == null ? "" : String(value)]),
+      Object.entries(rawVariables || {}).map(([key, value]) => [key, value == null ? "" : String(value)]),
     );
+    const trackUrl = `${FRONTEND_URL}/track?id=${applicationId}`;
+
     const defaultVariables = {
       name: personName ?? "",
+      application_id: applicationId,
+      track_url: trackUrl,
       job_title: jobTitle,
       job_branch: jobBranch,
       schedule_date: scheduleDate,
@@ -310,16 +386,31 @@ serve(async (req: Request) => {
       onboarding_date: onboardingDate,
       onboarding_time: onboardingTime,
       dress_code: dressCode,
+      notes_text: onboardingNotes || "Sin notas adicionales.",
       contact_phone: "",
       contact_email: "",
       coupon_code: "",
+      // Aliases requested by User
+      candidate_name: personName ?? "",
+      interview_date: scheduleDate,
+      interview_time: scheduleTime,
+      meet_link: application.meet_link ? `[UNIRSE AHORA](${application.meet_link})` : "",
     };
 
     const mergedVariables = { ...defaultVariables, ...variables };
     const renderedSubject = renderTemplate(template.subject, mergedVariables);
     const renderedBody = renderTemplate(template.body_md, mergedVariables);
 
-    const parsedHtml = await marked.parse(renderedBody);
+    // When the body is HTML (e.g. saved by ReactQuill), marked does not convert
+    // markdown-style links [text](url) or **bold** inside HTML block elements.
+    // Pre-process them so buttons and formatting survive regardless of storage format.
+    const preprocessBody = (body: string): string =>
+      body
+        .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+        .replace(/\*(.+?)\*/g, "<em>$1</em>")
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+
+    const parsedHtml = await marked.parse(preprocessBody(renderedBody));
 
     const beautifulHtml = `
 <!DOCTYPE html>
@@ -423,18 +514,34 @@ serve(async (req: Request) => {
       errorText = `EMAIL_SEND_MODE not supported: ${EMAIL_SEND_MODE}`;
     }
 
-    const { error: logError } = await supabase
-      .from("recruit_message_logs")
-      .insert({
-        application_id: applicationId,
-        template_id: template.id,
-        channel: "email",
-        to_address: toAddress,
-        status,
-        provider_message_id: providerMessageId,
-        error: errorText,
-        sent_at: status === "sent" ? new Date().toISOString() : null,
-      });
+    const logData = {
+      status,
+      provider_message_id: providerMessageId,
+      error: errorText,
+      sent_at: status === "sent" ? new Date().toISOString() : null,
+    };
+
+    let logError = null;
+    if (webhookLogId) {
+      // Update existing log if from Webhook (Prevents Infinite Loop)
+      const { error } = await supabase
+        .from("recruit_message_logs")
+        .update(logData)
+        .eq("id", webhookLogId);
+      logError = error;
+    } else {
+      // Insert new log if manual call
+      const { error } = await supabase
+        .from("recruit_message_logs")
+        .insert({
+          ...logData,
+          application_id: applicationId,
+          template_id: template.id,
+          channel: "email",
+          to_address: toAddress,
+        });
+      logError = error;
+    }
 
     if (logError) {
       return errorResponse("Failed to log message", 500, logError.message);

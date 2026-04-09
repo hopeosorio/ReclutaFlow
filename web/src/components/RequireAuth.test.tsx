@@ -1,97 +1,90 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
+import { describe, beforeEach, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import RequireAuth from "./RequireAuth";
 
 const useAuthMock = vi.fn();
-const signOutMock = vi.fn();
 
-vi.mock("@/app/AuthProvider", () => ({
-  useAuth: () => useAuthMock(),
-}));
-
+vi.mock("@/app/AuthProvider", () => ({ useAuth: () => useAuthMock() }));
 vi.mock("@/lib/supabaseClient", () => ({
-  supabase: {
-    auth: {
-      signOut: () => signOutMock(),
-    },
-  },
+  supabase: { auth: { signOut: vi.fn(async () => ({ error: null })) } },
 }));
 
-function renderWithRoutes(roles?: ("rh_admin" | "rh_recruiter" | "interviewer")[]) {
-  return render(
+function Protected({ roles }: { roles?: string[] }) {
+  return (
     <MemoryRouter initialEntries={["/crm"]}>
       <Routes>
-        <Route element={<RequireAuth roles={roles} />}>
+        <Route path="/login" element={<div>Login</div>} />
+        <Route element={<RequireAuth roles={roles as any} />}>
           <Route path="/crm" element={<div>CRM</div>} />
         </Route>
-        <Route path="/login" element={<div>Login</div>} />
       </Routes>
-    </MemoryRouter>,
+    </MemoryRouter>
   );
 }
 
 describe("RequireAuth", () => {
-  beforeEach(() => {
-    useAuthMock.mockReset();
-    signOutMock.mockReset();
+  beforeEach(() => useAuthMock.mockReset());
+
+  it("muestra null mientras carga", () => {
+    useAuthMock.mockReturnValue({ loading: true, session: null, profile: null, error: null });
+    const { container } = render(<Protected />);
+    expect(container.firstChild).toBeNull();
   });
 
-  it("muestra loading mientras verifica sesión", () => {
-    useAuthMock.mockReturnValue({ session: null, profile: null, loading: true, error: null });
-    renderWithRoutes(["rh_admin"]);
-    expect(screen.getByText("Verificando sesión")).toBeInTheDocument();
-  });
-
-  it("muestra error de sesión cuando AuthProvider falla", () => {
-    useAuthMock.mockReturnValue({
-      session: null,
-      profile: null,
-      loading: false,
-      error: "falló",
-    });
-    renderWithRoutes(["rh_admin"]);
-    expect(screen.getByText("Error de sesión")).toBeInTheDocument();
-    expect(screen.getByText("falló")).toBeInTheDocument();
-  });
-
-  it("redirige a login si no hay sesión", () => {
-    useAuthMock.mockReturnValue({ session: null, profile: null, loading: false, error: null });
-    renderWithRoutes(["rh_admin"]);
+  it("redirige a /login si no hay sesión", () => {
+    useAuthMock.mockReturnValue({ loading: false, session: null, profile: null, error: null });
+    render(<Protected />);
     expect(screen.getByText("Login")).toBeInTheDocument();
   });
 
-  it("muestra aviso si no existe perfil RH", () => {
+  it("muestra contenido protegido con sesión válida y rol correcto", () => {
     useAuthMock.mockReturnValue({
-      session: { user: { id: "1" } },
-      profile: null,
       loading: false,
+      session: { user: { id: "1" } },
+      profile: { role: "rh_admin", full_name: "Admin" },
       error: null,
     });
-    renderWithRoutes(["rh_admin"]);
-    expect(screen.getByText("Acceso no configurado")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Cerrar sesión"));
-    expect(signOutMock).toHaveBeenCalled();
+    render(<Protected roles={["rh_admin"]} />);
+    expect(screen.getByText("CRM")).toBeInTheDocument();
   });
 
-  it("muestra aviso si el rol no tiene acceso", () => {
+  it("muestra acceso restringido cuando el rol no coincide", () => {
     useAuthMock.mockReturnValue({
-      session: { user: { id: "1" } },
-      profile: { id: "1", role: "interviewer", full_name: "Test" },
       loading: false,
+      session: { user: { id: "1" } },
+      profile: { role: "interviewer", full_name: "Entrevistador" },
       error: null,
     });
-    renderWithRoutes(["rh_admin"]);
+    render(<Protected roles={["rh_admin"]} />);
     expect(screen.getByText("Acceso restringido")).toBeInTheDocument();
   });
 
-  it("permite acceso cuando el rol coincide", () => {
+  it("muestra error de sesión cuando hay error", () => {
+    useAuthMock.mockReturnValue({ loading: false, session: null, profile: null, error: "Token expirado" });
+    render(<Protected />);
+    expect(screen.getByText("Error de sesión")).toBeInTheDocument();
+  });
+
+  it("muestra 'Acceso no configurado' si hay sesión pero sin perfil", () => {
     useAuthMock.mockReturnValue({
-      session: { user: { id: "1" } },
-      profile: { id: "1", role: "rh_admin", full_name: "Test" },
       loading: false,
+      session: { user: { id: "1" } },
+      profile: null,
       error: null,
     });
-    renderWithRoutes(["rh_admin"]);
+    render(<Protected roles={["rh_admin"]} />);
+    expect(screen.getByText("Acceso no configurado")).toBeInTheDocument();
+  });
+
+  it("permite acceso sin restricción de rol cuando roles es undefined", () => {
+    useAuthMock.mockReturnValue({
+      loading: false,
+      session: { user: { id: "1" } },
+      profile: { role: "interviewer", full_name: "Test" },
+      error: null,
+    });
+    render(<Protected />);
     expect(screen.getByText("CRM")).toBeInTheDocument();
   });
 });

@@ -1,8 +1,9 @@
-﻿import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface SignaturePadProps {
   value?: string | null;
   onChange: (dataUrl: string | null) => void;
+  disabled?: boolean;
 }
 
 function getPoint(event: PointerEvent, canvas: HTMLCanvasElement) {
@@ -13,7 +14,7 @@ function getPoint(event: PointerEvent, canvas: HTMLCanvasElement) {
   };
 }
 
-export default function SignaturePad({ value, onChange }: SignaturePadProps) {
+export default function SignaturePad({ value, onChange, disabled }: SignaturePadProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -24,10 +25,11 @@ export default function SignaturePad({ value, onChange }: SignaturePadProps) {
     if (!canvas) return;
 
     const resize = () => {
-      const parent = canvas.parentElement;
-      if (!parent) return;
+      // Usar containerRef para no gatillar feedback loop con el canvas en absoluto
+      const container = containerRef.current;
+      if (!container) return;
 
-      const { width, height } = parent.getBoundingClientRect();
+      const { width, height } = container.getBoundingClientRect();
       const ratio = window.devicePixelRatio || 1;
 
       canvas.width = width * ratio;
@@ -46,8 +48,9 @@ export default function SignaturePad({ value, onChange }: SignaturePadProps) {
     };
 
     resize();
+    // Observar el contenedor (no el canvas) para evitar el feedback loop
     const observer = new ResizeObserver(resize);
-    observer.observe(canvas.parentElement!);
+    observer.observe(containerRef.current!);
 
     return () => observer.disconnect();
   }, []);
@@ -74,7 +77,7 @@ export default function SignaturePad({ value, onChange }: SignaturePadProps) {
     if (!canvas) return;
 
     const handlePointerDown = (e: PointerEvent) => {
-      if (e.button !== 0) return; // Only left click / primary touch
+      if (disabled || e.button !== 0) return; // Block if disabled
       setIsDrawing(true);
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
@@ -110,9 +113,10 @@ export default function SignaturePad({ value, onChange }: SignaturePadProps) {
       canvas.removeEventListener("pointermove", handlePointerMove);
       canvas.removeEventListener("pointerup", handlePointerUp);
     };
-  }, [isDrawing, onChange]);
+  }, [isDrawing, onChange, disabled]);
 
   const handleClear = () => {
+    if (disabled) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
@@ -125,11 +129,12 @@ export default function SignaturePad({ value, onChange }: SignaturePadProps) {
     <div className="signature-container" ref={containerRef} style={{ position: 'relative', width: '100%', height: '180px', background: '#f8f9fa', borderRadius: '8px', border: '1px solid #e2e8f0', overflow: 'hidden' }}>
       <canvas
         ref={canvasRef}
-        style={{ touchAction: 'none', display: 'block', cursor: 'crosshair' }}
+        style={{ position: 'absolute', top: 0, left: 0, touchAction: 'none', display: 'block', cursor: 'crosshair' }}
       />
       <button
         type="button"
         onClick={handleClear}
+        disabled={disabled}
         style={{
           position: 'absolute',
           top: '10px',
@@ -139,23 +144,36 @@ export default function SignaturePad({ value, onChange }: SignaturePadProps) {
           fontWeight: 700,
           textTransform: 'uppercase',
           letterSpacing: '0.05em',
-          background: 'rgba(255,255,255,0.9)',
+          background: disabled ? '#f1f5f9' : 'rgba(255,255,255,0.9)',
           border: '1px solid #e2e8f0',
           borderRadius: '4px',
-          cursor: 'pointer',
-          color: '#64748b',
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          color: disabled ? '#cbd5e1' : '#64748b',
           transition: 'all 0.2s ease',
           zIndex: 10
         }}
-        onMouseOver={(e) => { e.currentTarget.style.background = '#fff'; e.currentTarget.style.color = '#ef4444'; }}
-        onMouseOut={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.9)'; e.currentTarget.style.color = '#64748b'; }}
+        onMouseOver={(e) => { 
+          if (disabled) return;
+          e.currentTarget.style.background = '#fff'; 
+          e.currentTarget.style.color = '#ef4444'; 
+        }}
+        onMouseOut={(e) => { 
+          if (disabled) return;
+          e.currentTarget.style.background = 'rgba(255,255,255,0.9)'; 
+          e.currentTarget.style.color = '#64748b'; 
+        }}
       >
         Limpiar
       </button>
       {!value && !isDrawing && (
         <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', opacity: 0.3 }}>
-          <span style={{ fontSize: '0.7rem', fontWeight: 600, color: '#64748b', textTransform: 'uppercase' }}>Firme aquí</span>
+          <span style={{ fontSize: '0.7rem', fontWeight: 600, color: '#64748b', textTransform: 'uppercase' }}>
+            {disabled ? "LECTURA PENDIENTE" : "Firme aquí"}
+          </span>
         </div>
+      )}
+      {disabled && (
+        <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.1)', cursor: 'not-allowed', zIndex: 5 }} />
       )}
     </div>
   );

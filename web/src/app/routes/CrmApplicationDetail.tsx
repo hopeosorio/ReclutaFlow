@@ -1,13 +1,12 @@
-﻿import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useAuth } from "@/app/AuthProvider";
-import LoadingScreen from "@/components/LoadingScreen";
 import { formatDateTime } from "@/lib/format";
-import { functionsBaseUrl, supabase } from "@/lib/supabaseClient";
+import { functionsBaseUrl, supabase, supabaseAnonKey, supabaseUrl } from "@/lib/supabaseClient";
 import ReactQuill from "react-quill-new";
 import "react-quill-new/dist/quill.snow.css";
-import { useAppToast } from "@/app/layouts/CrmLayout";
+import { useAppToast, useCrumbs } from "@/app/layouts/CrmLayout";
 import {
   Calendar,
   FileText,
@@ -16,20 +15,25 @@ import {
   Mail,
   Phone,
   MapPin,
-  CheckCircle2,
+  CheckCircle,
   XCircle,
   Video,
   ArrowRight,
+  ArrowLeft,
   AlertCircle,
+  AlertTriangle,
   RotateCcw,
   Trash2,
   Clock,
   Briefcase,
-  GraduationCap,
   ShieldCheck,
   History,
   Plus,
-  ExternalLink
+  ExternalLink,
+  Pencil,
+  UserPlus,
+  ClipboardList,
+  Award
 } from "lucide-react";
 
 interface ApplicationRow {
@@ -73,6 +77,7 @@ interface ApplicationRow {
 interface StatusRow {
   status_key: string;
   label: string;
+  category: string;
   requires_reason: boolean;
 }
 
@@ -98,6 +103,7 @@ interface DocumentRow {
   recruit_document_types: {
     id: string;
     name: string;
+    label: string;
     stage: string;
     is_required: boolean;
   } | null;
@@ -105,7 +111,7 @@ interface DocumentRow {
 
 interface InterviewRow {
   id: string;
-  interview_type: "phone" | "in_person";
+  interview_type: "phone" | "in_person" | "virtual";
   scheduled_at: string | null;
   location: string | null;
   result: "pending" | "pass" | "fail" | "no_show" | "reschedule";
@@ -119,6 +125,12 @@ interface RehireFlagRow {
   reason: string;
   set_at: string;
   profiles: { full_name: string | null } | null;
+}
+
+interface OnboardingHostRow {
+  id: string;
+  full_name: string;
+  email: string;
 }
 
 
@@ -144,11 +156,13 @@ export default function CrmApplicationDetail() {
   const { session, profile } = useAuth();
   const user = session?.user;
   const { toast } = useAppToast();
+  const { setCrumbs } = useCrumbs();
   const [application, setApplication] = useState<ApplicationRow | null>(null);
   const [statuses, setStatuses] = useState<StatusRow[]>([]);
   const [transitions, setTransitions] = useState<StatusTransitionRow[]>([]);
   const [notes, setNotes] = useState<NoteRow[]>([]);
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
+  const [documentTypes, setDocumentTypes] = useState<any[]>([]);
   const [interviews, setInterviews] = useState<InterviewRow[]>([]);
   const [rehireFlags, setRehireFlags] = useState<RehireFlagRow[]>([]);
   const [scheduling, setScheduling] = useState(false);
@@ -164,7 +178,9 @@ export default function CrmApplicationDetail() {
   const [statusNote, setStatusNote] = useState("");
   const [statusError, setStatusError] = useState<string | null>(null);
   const [statusSubmitting, setStatusSubmitting] = useState(false);
-  const [slot1, setSlot1] = useState("");
+  const [interviewSaving, setInterviewSaving] = useState(false);
+  const [interviewResult, setInterviewResult] = useState<string>("pending");
+  const [interviewNotes, setInterviewNotes] = useState<string>("");
 
   const [noteText, setNoteText] = useState("");
 
@@ -178,11 +194,27 @@ export default function CrmApplicationDetail() {
   });
   const [interviewError, setInterviewError] = useState<string | null>(null);
 
-
+  const [hosts, setHosts] = useState<OnboardingHostRow[]>([]);
+  const [onboardingForm, setOnboardingForm] = useState({
+    scheduled_at: "",
+    location: "",
+    dress_code: "",
+    host_id: "",
+    notes: "",
+  });
+  const [onboardingSaving, setOnboardingSaving] = useState(false);
+  const [onboardingError, setOnboardingError] = useState<string | null>(null);
+  const [onboardingSaved, setOnboardingSaved] = useState(false);
+  const [onboardingEditMode, setOnboardingEditMode] = useState(false);
+  const [showManualTransition, setShowManualTransition] = useState(false);
+  const [sendingReminder, setSendingReminder] = useState(false);
 
   // Document preview modal
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewName, setPreviewName] = useState("");
+  const [rejectingDocId, setRejectingDocId] = useState<string | null>(null);
+  const [rejectNote, setRejectNote] = useState("");
+  const [viewedDocs, setViewedDocs] = useState<Set<string>>(new Set());
 
   const [activeTab, setActiveTab] = useState<'profile' | 'interviews' | 'notes' | 'documents'>('profile');
 
@@ -194,11 +226,16 @@ export default function CrmApplicationDetail() {
   ], []);
 
   const stageConfig = useMemo(() => {
-    if (!application) return { tabs: ALL_TABS, focus: 'GENERAL', nextStepText: 'CARGANDO...', docsValidated: false };
+    if (!application) return { tabs: ALL_TABS, focus: 'GENERAL', nextStepText: 'CARGANDO...', docsValidated: false, allRequiredUploaded: false };
     const s = application.status_key;
 
     // Verificar si todos los documentos cargados están VALIDADOS
     const docsValidated = documents.length > 0 && documents.every(d => d.validation_status === 'validated');
+
+    const visibleStages = ['application'];
+    if (s === 'documents_pending' || s === 'documents_complete' || s === 'onboarding' || s === 'onboarding_scheduled' || s === 'hired') {
+      visibleStages.push('post_interview', 'onboarding');
+    }
 
     let tabs = ['profile', 'notes'];
     let focus = 'REVISIÓN GENERAL';
@@ -206,39 +243,66 @@ export default function CrmApplicationDetail() {
 
     if (s === 'new' || s === 'validation') {
       tabs = ['profile', 'documents', 'notes'];
-      nextStepText = docsValidated ? 'DOCUMENTOS VALIDADOS' : 'VALIDAR DOCUMENTOS DEL POSTULANTE';
-    } else if (s === 'interview_scheduled') {
+      focus = docsValidated ? 'AGENDAR REUNIÓN VIRTUAL' : 'REVISIÓN DE SOLICITUD';
+      nextStepText = docsValidated ? 'CONFIRMAR HORARIO DEL CANDIDATO' : 'VALIDAR SOLICITUD DE EMPLEO';
+    } else if (s === 'virtual_scheduled') {
+      tabs = ['profile', 'documents', 'notes'];
+      focus = 'REUNIÓN VIRTUAL AGENDADA';
+      nextStepText = 'CONFIRMAR SLOT Y GENERAR MEET';
+    } else if (s === 'virtual_done') {
       tabs = ['profile', 'interviews', 'notes'];
-      focus = 'GESTIÓN DE ENTREVISTAS';
-      nextStepText = 'EVALUAR RESULTADO DE ENTREVISTA';
-    } else if (s === 'onboarding') {
-      tabs = ['profile', 'documents', 'notes']; // Show docs again for onboarding paperwork
-      focus = 'PAPELEO DE INGRESO';
-      nextStepText = 'CANDIDATO EN PROCESO DE INGRESO';
-    } else if (s === 'rejected') {
+      focus = 'ENTREVISTA COMPLETADA';
+      nextStepText = 'REGISTRAR RESULTADO Y AVANZAR';
+    } else if (s === 'documents_pending') {
+      tabs = ['profile', 'documents', 'notes'];
+      focus = docsValidated ? 'EXPEDIENTE LISTO' : 'PAPELEO DE CONTRATACIÓN';
+      nextStepText = docsValidated ? 'MARCAR EXPEDIENTE COMPLETO' : 'VALIDAR DOCUMENTOS PARA INGRESO';
+    } else if (s === 'documents_complete') {
       tabs = ['profile', 'notes'];
+      focus = 'PROGRAMAR ONBOARDING';
+      nextStepText = 'COMPLETAR DATOS DE ONBOARDING';
+    } else if (s === 'onboarding' || s === 'onboarding_scheduled') {
+      tabs = ['profile', 'documents', 'notes'];
+      focus = 'PROCESO DE INGRESO';
+      nextStepText = s === 'onboarding_scheduled' ? 'ONBOARDING PROGRAMADO' : 'PROGRAMAR ONBOARDING';
+    } else if (s === 'rejected') {
+      tabs = ['profile', 'documents', 'notes'];
       focus = 'HISTORIAL';
       nextStepText = 'CANDIDATO RECHAZADO';
+    } else if (s === 'hired') {
+      tabs = ['profile', 'documents', 'notes'];
+      focus = 'CONTRATADO';
+      nextStepText = 'CANDIDATO CONTRATADO';
     } else {
       tabs = ['profile', 'interviews', 'notes', 'documents'];
     }
+
+    // Verificar si todos los documentos OBLIGATORIOS han sido subidos y validados
+    const requiredTypes = documentTypes.filter(dt => dt.is_required && visibleStages.includes(dt.stage));
+    const allRequiredUploaded = requiredTypes.length > 0 &&
+      requiredTypes.every(dt => documents.some(d => d.recruit_document_types?.id === dt.id));
+    const allRequiredValidated = allRequiredUploaded &&
+      requiredTypes.every(dt =>
+        documents
+          .filter(d => d.recruit_document_types?.id === dt.id)
+          .every(d => d.validation_status === 'validated')
+      );
 
     return {
       tabs: ALL_TABS.filter(t => tabs.includes(t.id)),
       focus,
       nextStepText,
-      docsValidated
+      docsValidated,
+      allRequiredUploaded,
+      allRequiredValidated,
+      visibleStages
     };
-  }, [application, ALL_TABS, documents]);
+  }, [application, ALL_TABS, documents, documentTypes]);
 
   const activeInterview = useMemo(() => {
     return interviews.find(i => i.result === 'pending') || interviews[0];
   }, [interviews]);
 
-  const isInterviewPassed = useMemo(() => {
-    if (!activeInterview?.scheduled_at) return true;
-    return new Date().getTime() > new Date(activeInterview.scheduled_at).getTime();
-  }, [activeInterview]);
 
   const isMeetJoinable = useMemo(() => {
     if (!activeInterview?.scheduled_at) return false;
@@ -267,7 +331,7 @@ export default function CrmApplicationDetail() {
 
     // RESTRICT: Solo permitir avanzar si el folder está validado
     if ((application.status_key === 'new' || application.status_key === 'validation') && !stageConfig.docsValidated) {
-      baseTransitions = baseTransitions.filter(st => st !== 'interview_scheduled');
+      baseTransitions = baseTransitions.filter(st => !['interview_scheduled', 'interview_done_pass', 'interview_done_fail'].includes(st));
     }
 
     return baseTransitions;
@@ -305,7 +369,11 @@ export default function CrmApplicationDetail() {
     }
 
     setApplication(appData);
-    setSlot1(appData.suggested_slot_1 ?? "");
+
+    const person = appData.recruit_candidates?.recruit_persons;
+    const candidateName = person ? `${person.first_name} ${person.last_name}` : "Candidato";
+    setCrumbs([{ label: "Pipeline", to: "/crm" }, { label: candidateName }]);
+
     setRehireFlags([]);
 
     const personId = appData.recruit_candidates?.recruit_persons?.id ?? null;
@@ -313,7 +381,7 @@ export default function CrmApplicationDetail() {
     const requests: any[] = [
       supabase
         .from("recruit_statuses")
-        .select("status_key, label, requires_reason")
+        .select("status_key, label, category, requires_reason")
         .eq("is_active", true)
         .order("sort_order"),
       supabase
@@ -328,9 +396,10 @@ export default function CrmApplicationDetail() {
       supabase
         .from("recruit_application_documents")
         .select(
-          "id, storage_path, validation_status, validation_notes, uploaded_at, validated_at, recruit_document_types(id, name, stage, is_required)",
+          "id, storage_path, validation_status, validation_notes, uploaded_at, validated_at, recruit_document_types!inner(id, name, label, stage, is_required, is_active)",
         )
         .eq("application_id", id)
+        .eq("recruit_document_types.is_active", true)
         .order("uploaded_at", { ascending: false }),
       supabase
         .from("recruit_interviews")
@@ -344,6 +413,21 @@ export default function CrmApplicationDetail() {
         .select("id, status_key, reason, notes, changed_at, profiles:changed_by(full_name)")
         .eq("application_id", id)
         .order("changed_at", { ascending: false }),
+      supabase
+        .from("recruit_document_types")
+        .select("id, name, label, stage, is_required")
+        .eq("is_active", true)
+        .order("name"),
+      supabase
+        .from("recruit_onboarding_plans")
+        .select("id, scheduled_at, location, dress_code, host_name, host_id, notes")
+        .eq("application_id", id)
+        .maybeSingle(),
+      supabase
+        .from("recruit_onboarding_hosts")
+        .select("id, full_name, email")
+        .eq("is_active", true)
+        .order("full_name")
     ];
 
     if (personId) {
@@ -357,8 +441,7 @@ export default function CrmApplicationDetail() {
     }
 
     const results: any[] = await Promise.all(requests);
-
-    const [statusRes, transitionRes, noteRes, docRes, interviewRes, historyRes] = results;
+    const [statusRes, transitionRes, noteRes, docRes, interviewRes, historyRes, typeRes, onboardingPlanRes, hostsRes] = results;
 
     if (statusRes?.error) setError(statusRes.error.message);
     if (transitionRes?.error) setError(transitionRes.error.message);
@@ -366,15 +449,48 @@ export default function CrmApplicationDetail() {
     if (docRes?.error) setError(docRes.error.message);
     if (interviewRes?.error) setError(interviewRes.error.message);
     if (historyRes?.error) setError(historyRes.error.message);
+    if (typeRes?.error) setError(typeRes.error.message);
 
     setStatuses((statusRes?.data as any) ?? []);
     setTransitions((transitionRes?.data as any) ?? []);
     setNotes((noteRes?.data as any) ?? []);
-    setDocuments((docRes?.data as any) ?? []);
-    setInterviews((interviewRes?.data as any) ?? []);
-    setStatusHistory((historyRes?.data as any) ?? []);
+    const loadedDocs: DocumentRow[] = (docRes?.data as any) ?? [];
+    setDocuments(loadedDocs);
+    // Restore viewed state from localStorage, keyed by storage_path so a re-upload invalidates it
+    setViewedDocs(new Set(
+      loadedDocs
+        .filter(d => localStorage.getItem(`viewed_doc_${d.id}_${d.storage_path}`) === '1')
+        .map(d => d.id)
+    ));
+    setDocumentTypes((typeRes?.data as any) ?? []);
 
-    let offset = 6;
+    const ivs = (interviewRes?.data as any) ?? [];
+    setInterviews(ivs);
+    // Pre-fill result form with the first pending interview if any
+    const pending = ivs.find((i: any) => i.result === 'pending');
+    if (pending) {
+      setInterviewNotes(pending.notes || "");
+      setInterviewResult(pending.result || "pending");
+    }
+    setStatusHistory((historyRes?.data as any) ?? []);
+    const existingPlan = onboardingPlanRes?.data ?? null;
+    const planExists = !!(existingPlan?.scheduled_at);
+    setOnboardingSaved(planExists);
+    setOnboardingEditMode(!planExists);
+    if (existingPlan?.scheduled_at) {
+      const dt = new Date(existingPlan.scheduled_at);
+      const localIso = new Date(dt.getTime() - dt.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+      setOnboardingForm({
+        scheduled_at: localIso,
+        location: existingPlan.location ?? "",
+        dress_code: existingPlan.dress_code ?? "",
+        host_id: existingPlan.host_id ?? "",
+        notes: existingPlan.notes ?? "",
+      });
+    }
+    setHosts((hostsRes?.data as OnboardingHostRow[]) ?? []);
+
+    let offset = 9;
     if (personId) {
       const rehireRes = results[offset];
       if (rehireRes?.error) setError(rehireRes.error.message);
@@ -382,7 +498,6 @@ export default function CrmApplicationDetail() {
       offset += 1;
     }
 
-    offset = offset; // placeholder to keep logic flow
 
 
 
@@ -392,6 +507,7 @@ export default function CrmApplicationDetail() {
 
   useEffect(() => {
     loadData();
+    return () => setCrumbs([]);
   }, [loadData]);
 
   useEffect(() => {
@@ -450,79 +566,34 @@ export default function CrmApplicationDetail() {
   };
 
   const triggerStatusChange = async (newStatus: string, reason?: string, note?: string) => {
-    const updateData: any = {
-      status_key: newStatus,
-      status_reason: reason || null
-    };
+    // 1. Manejo especial de agendamiento (Selección de Slot)
+    // 2. Ejecutar cambio de estatus CENTRALIZADO (Lógica de Oro)
+    const { data: refreshData } = await supabase.auth.refreshSession();
+    const token = refreshData?.session?.access_token;
+    if (!token) throw new Error("Sesión expirada. Recarga la página e inicia sesión nuevamente.");
 
-    if (newStatus === 'interview_scheduled') {
-      if (!slot1) throw new Error("Debes elegir el horario definitivo de la entrevista.");
+    const res = await fetch(`${supabaseUrl}/functions/v1/change_status`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`,
+        "apikey": supabaseAnonKey!,
+      },
+      body: JSON.stringify({
+        application_id: id,
+        status_key: newStatus,
+        reason: reason || null,
+        note: note || null,
+        variables: { custom_note: note || "" },
+      }),
+    });
 
-      await validateSlotAvailability(slot1);
-
-      const { data: funcData, error: funcError } = await supabase.functions.invoke('schedule_interview', {
-        body: {
-          application_id: id,
-          scheduled_at: slot1,
-          interviewer_id: user?.id,
-        }
-      });
-
-      if (funcError) {
-        console.error("❌ Edge Function Error:", funcError);
-        let detail = funcError.message;
-        try {
-          const body = await (funcError as any).response?.json();
-          if (body?.error) detail = body.error;
-        } catch (e) { }
-        throw new Error(`Error de Servidor: ${detail}`);
-      }
-
-      if (funcData?.error) throw new Error(funcData.error);
-
-      updateData.suggested_slot_1 = new Date(slot1).toISOString();
-      updateData.suggested_slot_2 = null;
-      updateData.suggested_slot_3 = null;
+    const statusData = await res.json();
+    if (!res.ok) {
+      throw new Error(statusData?.details ?? statusData?.error ?? statusData?.message ?? JSON.stringify(statusData) ?? `Error ${res.status}`);
     }
 
-    const { error: updateError } = await supabase
-      .from("recruit_applications")
-      .update(updateData)
-      .eq("id", id);
-
-    if (updateError) throw updateError;
-
-    if (note?.trim()) {
-      await supabase.from("recruit_notes").insert({ application_id: id, note: note.trim() });
-    }
-
-    const { data: transition } = await supabase
-      .from("recruit_status_transitions")
-      .select("template_key")
-      .eq("from_status_key", application?.status_key)
-      .eq("to_status_key", newStatus)
-      .eq("is_active", true)
-      .maybeSingle();
-
-    if (transition?.template_key) {
-      const { data: template } = await supabase
-        .from("recruit_message_templates")
-        .select("id")
-        .eq("template_key", transition.template_key)
-        .single();
-
-      if (template) {
-        await supabase.from("recruit_message_logs").insert({
-          application_id: id,
-          template_id: template.id,
-          status: 'queued',
-          channel: 'email',
-          to_address: application?.recruit_candidates?.recruit_persons?.email
-        });
-        return { ok: true, template_key: transition.template_key };
-      }
-    }
-    return { ok: true };
+    return { ok: true, email: statusData?.email };
   };
 
   const handleStatusChange = async (event: FormEvent) => {
@@ -543,16 +614,41 @@ export default function CrmApplicationDetail() {
     setStatusSubmitting(true);
     setStatusError(null);
     try {
-      const result = await triggerStatusChange(nextStatus, statusReason.trim(), statusNote.trim());
-      if (result.template_key) {
-        toast.info(`Estatus actualizado. Correo "${result.template_key}" en cola.`);
+      const result: any = await triggerStatusChange(nextStatus, statusReason.trim(), statusNote.trim());
+      if (result.email?.template_key) {
+        toast.info(`Estatus actualizado. Correo "${result.email.template_key}" en cola.`);
       } else {
         toast.success("Estatus actualizado con éxito.");
       }
+
+      // Al contratar: enviar bienvenida al equipo al candidato
+      if (nextStatus === 'hired') {
+        const { data: { session: hiredSession } } = await supabase.auth.getSession();
+        const token = hiredSession?.access_token;
+        if (token && id) {
+          fetch(`${supabaseUrl}/functions/v1/send_email`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}`, "apikey": supabaseAnonKey! },
+            body: JSON.stringify({ application_id: id, template_key: "welcome_onboarding" }),
+          });
+        }
+      }
+
+      // Al solicitar documentos: enviar correo automático al candidato
+      if (nextStatus === 'documents_pending') {
+        const { data: { session: docsSession } } = await supabase.auth.getSession();
+        const token = docsSession?.access_token;
+        if (token && id) {
+          fetch(`${supabaseUrl}/functions/v1/send_email`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}`, "apikey": supabaseAnonKey! },
+            body: JSON.stringify({ application_id: id, template_key: "documents_request" }),
+          });
+        }
+      }
+
       setStatusReason("");
       setStatusNote("");
-      // Reset slots after success
-      setSlot1("");
       await loadData();
     } catch (err: any) {
       console.error("Transition Error:", err);
@@ -561,58 +657,36 @@ export default function CrmApplicationDetail() {
     setStatusSubmitting(false);
   };
 
-  // --- GENERADOR DE HORARIOS DISPONIBLES ---
-  const availableSlots = useMemo(() => {
-    if (nextStatus !== 'interview_scheduled') return [];
+  const handleInterviewSignOff = async () => {
+    if (!activeInterview) return;
+    setInterviewSaving(true);
+    try {
+      // 1. Guardar el resultado físico en la tabla de entrevistas
+      const { error: ivError } = await supabase
+        .from("recruit_interviews")
+        .update({ result: interviewResult, notes: interviewNotes.trim() })
+        .eq("id", activeInterview.id);
 
-    // Priorizar las sugerencias del candidato
-    const suggestions = [
-      application?.suggested_slot_1,
-      application?.suggested_slot_2,
-      application?.suggested_slot_3
-    ].filter(Boolean) as string[];
+      if (ivError) throw ivError;
 
-    if (suggestions.length > 0) {
-      // Devolvemos los strings tal cual para evitar que el constructor de Date los altere al pasarlos por useMemo
-      return suggestions.sort();
-    }
-
-    const slots: Date[] = [];
-    const now = new Date();
-
-    // Generar para los próximos 14 días (Fallback si no hay sugerencias)
-    for (let d = 0; d < 14; d++) {
-      const day = new Date();
-      day.setDate(now.getDate() + d);
-
-      // Saltar fines de semana (0=Dom, 6=Sab)
-      const dayOfWeek = day.getDay();
-      if (dayOfWeek === 0 || dayOfWeek === 6) continue;
-
-      // De 09:00 a 17:00
-      for (let h = 9; h <= 17; h++) {
-        const slotDate = new Date(day);
-        slotDate.setHours(h, 0, 0, 0);
-
-        // No mostrar horas que ya pasaron hoy
-        if (slotDate <= now) continue;
-
-        // Verificar traslapes con entrevistas existentes
-        const isBusy = interviews.some(i => {
-          if (!i.scheduled_at) return false;
-          const interviewStart = new Date(i.scheduled_at);
-          const interviewEnd = new Date(interviewStart.getTime() + 60 * 60 * 1000);
-          return slotDate >= interviewStart && slotDate < interviewEnd;
-        });
-
-        if (!isBusy) {
-          slots.push(slotDate);
-        }
+      // 2. Ejecutar la transición de estatus según el resultado
+      if (interviewResult === 'pass') {
+        // Aprobado: virtual_scheduled → virtual_done → documents_pending (automático)
+        await triggerStatusChange('virtual_done', 'REUNIÓN VIRTUAL: APROBADO', interviewNotes.trim());
+        await triggerStatusChange('documents_pending', 'Avance automático tras aprobación de reunión virtual', undefined);
+      } else if (interviewResult === 'fail') {
+        await triggerStatusChange('rejected', 'REUNIÓN VIRTUAL: NO APROBADO', interviewNotes.trim());
       }
-    }
-    return slots;
-  }, [nextStatus, interviews, application]);
 
+      toast.success("Resultado de entrevista procesado con éxito.");
+      await loadData();
+    } catch (err: any) {
+      toast.error(`Error al procesar resultado: ${err.message}`);
+    }
+    setInterviewSaving(false);
+  };
+
+  // --- GENERADOR DE HORARIOS DISPONIBLES ---
   const handleAddNote = async (event: FormEvent) => {
     event.preventDefault();
     if (!noteText.trim()) return;
@@ -648,41 +722,164 @@ export default function CrmApplicationDetail() {
     toast.success(`Documento ${status === 'validated' ? 'validado' : (status === 'rejected' ? 'rechazado' : 'actualizado')}`);
   };
 
-  const validateFullExpediente = async () => {
-    if (!documents || documents.length === 0) {
-      toast.error("No hay documentos para validar.");
+  const handleReject = async (docId: string, note: string) => {
+    const { error } = await supabase
+      .from("recruit_application_documents")
+      .update({
+        validation_status: "rejected",
+        validation_notes: note.trim() || null,
+        validated_at: new Date().toISOString(),
+      })
+      .eq("id", docId);
+    if (error) {
+      toast.error(error.message);
       return;
     }
+    setRejectingDocId(null);
+    setRejectNote("");
+    await loadData();
+    toast.info("Documento rechazado.");
 
-    const allValidated = documents.every(d => d.validation_status === 'validated');
-    if (!allValidated) {
-      toast.error("Aún hay documentos sin validar. Revisa todos los archivos.");
-      return;
-    }
-
-    // Auto-advance safely respecting the DB status chain
-    let targetStates: string[] = ['interview_scheduled'];
-
-    let success = true;
-    for (const state of targetStates) {
-      const { error: invokeError } = await supabase.functions.invoke("change_status", {
-        body: {
-          application_id: id,
-          status_key: state,
-          reason: "Expediente validado por el reclutador.",
-        },
-      });
-      if (invokeError) {
-        console.error(`Edge Function Error [${state}]:`, invokeError);
-        toast.error(`Error al avanzar a la fase ${state}: ${invokeError.message}`);
-        success = false;
-        break;
+    // Notify the candidate by email
+    try {
+      const rejectedDoc = documents.find(d => d.id === docId);
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token && application?.id) {
+        await fetch(`${supabaseUrl}/functions/v1/send_email`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${session.access_token}`,
+            "apikey": supabaseAnonKey!,
+          },
+          body: JSON.stringify({
+            application_id: application.id,
+            template_key: "document_rejected",
+            variables: {
+              doc_name: rejectedDoc?.recruit_document_types?.label || rejectedDoc?.recruit_document_types?.name || "documento",
+              rejection_reason: note.trim() || "No se especificó un motivo.",
+            },
+          }),
+        });
       }
+    } catch (emailErr) {
+      console.warn("No se pudo enviar notificación de rechazo:", emailErr);
     }
+  };
 
-    if (success) {
-      toast.success("Expediente Validado de forma exitosa. Transición completada.");
+
+  const sendDocumentsReminder = async () => {
+    setSendingReminder(true);
+    try {
+      const { data: refreshData } = await supabase.auth.refreshSession();
+      const token = refreshData?.session?.access_token;
+      if (!token) throw new Error("Sesión expirada.");
+      const res = await fetch(`${supabaseUrl}/functions/v1/send_email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}`, "apikey": supabaseAnonKey! },
+        body: JSON.stringify({ application_id: id, template_key: "documents_request" }),
+      });
+      if (!res.ok) {
+        const body = await res.json();
+        throw new Error(body?.error ?? `Error ${res.status}`);
+      }
+      toast.success("Recordatorio enviado al candidato.");
+    } catch (err: any) {
+      toast.error(`Error al enviar recordatorio: ${err.message}`);
+    } finally {
+      setSendingReminder(false);
+    }
+  };
+
+  const completeExpediente = async () => {
+    const allValidated = documents.length > 0 && documents.every(d => d.validation_status === 'validated');
+    if (!allValidated) {
+      toast.error("Aún hay documentos sin validar.");
+      return;
+    }
+    try {
+      await triggerStatusChange("documents_complete", "Expediente de contratación completo y validado.");
+      toast.success("Expediente marcado como completo.");
       loadData();
+    } catch (err: any) {
+      toast.error(`Error: ${err.message}`);
+    }
+  };
+
+  const handleOnboardingSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setOnboardingError(null);
+    if (!onboardingForm.scheduled_at) {
+      setOnboardingError("Debes seleccionar fecha y hora de onboarding.");
+      return;
+    }
+    if (!onboardingForm.host_id) {
+      setOnboardingError("Debes seleccionar un anfitrión responsable.");
+      return;
+    }
+    setOnboardingSaving(true);
+    try {
+      const selectedHost = hosts.find(h => h.id === onboardingForm.host_id) ?? null;
+
+      const { error: upsertError } = await supabase
+        .from("recruit_onboarding_plans")
+        .upsert({
+          application_id: id,
+          scheduled_at: onboardingForm.scheduled_at,
+          location: onboardingForm.location || null,
+          dress_code: onboardingForm.dress_code || null,
+          host_id: onboardingForm.host_id,
+          host_name: selectedHost?.full_name || null,
+          notes: onboardingForm.notes || null,
+          created_by: user?.id,
+        }, { onConflict: 'application_id' });
+
+      if (upsertError) throw upsertError;
+
+      // Cambio de estatus directo via RPC para evitar que change_status
+      // dispare emails automáticos configurados en recruit_status_transitions
+      if (application?.status_key !== 'onboarding_scheduled') {
+        const { error: rpcError } = await supabase.rpc('recruit_change_status', {
+          p_application_id: id,
+          p_status_key: 'onboarding_scheduled',
+          p_reason: 'Onboarding programado.',
+          p_note: null,
+        });
+        if (rpcError) throw rpcError;
+      }
+
+      // Enviar correos en paralelo
+      const { data: { session: onbSession } } = await supabase.auth.getSession();
+      const token = onbSession?.access_token;
+      if (token && id) {
+        const headers = { "Content-Type": "application/json", "Authorization": `Bearer ${token}`, "apikey": supabaseAnonKey! };
+        await Promise.allSettled([
+          // Candidato: detalles de fecha/hora/lugar/vestimenta del onboarding
+          fetch(`${supabaseUrl}/functions/v1/send_email`, {
+            method: "POST", headers,
+            body: JSON.stringify({ application_id: id, template_key: "onboarding_details" }),
+          }),
+          // Anfitrión: notificación de ingreso
+          selectedHost ? fetch(`${supabaseUrl}/functions/v1/send_email`, {
+            method: "POST", headers,
+            body: JSON.stringify({
+              application_id: id,
+              template_key: "onboarding_host_notification",
+              to_address: selectedHost.email,
+              variables: { host_name: selectedHost.full_name },
+            }),
+          }) : Promise.resolve(),
+        ]);
+      }
+
+      toast.success("Plan guardado. Notificaciones enviadas al candidato y al anfitrión.");
+      setOnboardingSaved(true);
+      setOnboardingEditMode(false);
+      loadData();
+    } catch (err: any) {
+      setOnboardingError(err.message);
+    } finally {
+      setOnboardingSaving(false);
     }
   };
 
@@ -691,7 +888,9 @@ export default function CrmApplicationDetail() {
       const { data, error: downloadError } = await supabase.storage.from('recruit-docs').createSignedUrl(doc.storage_path, 300);
       if (downloadError) throw downloadError;
       setPreviewUrl(data.signedUrl);
-      setPreviewName(doc.recruit_document_types?.name ?? "Documento");
+      setPreviewName(doc.recruit_document_types?.label ?? doc.recruit_document_types?.name ?? "Documento");
+      localStorage.setItem(`viewed_doc_${doc.id}_${doc.storage_path}`, '1');
+      setViewedDocs(prev => new Set(prev).add(doc.id));
     } catch (err: any) {
       toast.error(err.message);
     }
@@ -742,16 +941,12 @@ export default function CrmApplicationDetail() {
       return;
     }
 
-    // Auto-advance if virtual interview passed
-    // Auto-advance if virtual interview passed
-    if (payload.interview_type === 'virtual' && payload.result === 'pass') {
+    // Auto-advance: si la entrevista fue aprobada y el expediente está en virtual_scheduled
+    if (payload.result === 'pass' && application?.status_key === 'virtual_scheduled') {
       try {
-        if (application?.status_key === 'virtual_scheduled') {
-          await triggerStatusChange('virtual_done', 'Entrevista virtual completada');
-        }
-        await triggerStatusChange('final_docs', 'Entrevista virtual aprobada');
+        await triggerStatusChange('virtual_done', 'Entrevista completada y aprobada');
       } catch (err) {
-        console.error("Error auto-advancing status:", err);
+        console.error("Error al avanzar estatus automáticamente:", err);
       }
     }
 
@@ -791,9 +986,7 @@ export default function CrmApplicationDetail() {
 
 
 
-  if (loading && !application) {
-    return <LoadingScreen label="Cargando ficha" />;
-  }
+  if (loading && !application) return null;
 
   if (!application) {
     return (
@@ -821,7 +1014,9 @@ export default function CrmApplicationDetail() {
         return;
       }
 
+      const { data: { session: sivSession } } = await supabase.auth.getSession();
       const { data: funcData, error: funcError } = await supabase.functions.invoke('schedule_interview', {
+        headers: sivSession?.access_token ? { Authorization: `Bearer ${sivSession.access_token}` } : undefined,
         body: {
           application_id: application.id,
           scheduled_at: slot,
@@ -837,7 +1032,21 @@ export default function CrmApplicationDetail() {
         throw new Error(funcData.error);
       }
 
-      toast.success("Evento de Google Calendar creado exitosamente. Candidato notificado.");
+      // Enviar correo de citación al candidato
+      const { data: { session: emailSession } } = await supabase.auth.getSession();
+      if (emailSession?.access_token) {
+        fetch(`${supabaseUrl}/functions/v1/send_email`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${emailSession.access_token}`,
+            'apikey': supabaseAnonKey!,
+          },
+          body: JSON.stringify({ application_id: application.id, template_key: 'schedule_interview' }),
+        }).catch(() => { });
+      }
+
+      toast.success('ENTREVISTA AGENDADA: Los correos de notificación están en camino.');
       await loadData();
     } catch (err: any) {
       toast.error(err.message || "Error al agendar entrevista.");
@@ -894,13 +1103,7 @@ export default function CrmApplicationDetail() {
             {person?.first_name?.[0]}{person?.last_name?.[0]}
           </div>
           <h2 style={{ fontSize: '1.8rem', letterSpacing: '-0.02em', marginBottom: '0.5rem' }}>{person?.first_name} {person?.last_name}</h2>
-          <span className="badge" style={{ backgroundColor: 'var(--bg-accent)', color: 'var(--accent)', fontWeight: 800 }}>{statusLabel}</span>
-          {application.traffic_light && (
-            <div style={{ marginTop: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}>
-              <span className={`traffic traffic-${application.traffic_light}`} style={{ width: '12px', height: '12px' }} />
-              <small className="mono" style={{ fontSize: '0.6rem' }}>PRIORIDAD {application.traffic_light.toUpperCase()}</small>
-            </div>
-          )}
+          <span className={`badge badge-${application.status_key}`}>{statusLabel}</span>
         </div>
 
         <div className="sidebar-info" style={{ display: 'flex', flexDirection: 'column', gap: '1.8rem' }}>
@@ -968,7 +1171,7 @@ export default function CrmApplicationDetail() {
 
         <div style={{ marginTop: '2rem' }}>
           <Link className="btn-ghost" to="/crm" style={{ width: '100%', textAlign: 'center', fontSize: '0.65rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}>
-            <ArrowRight size={12} style={{ transform: 'rotate(180deg)' }} />
+            <ArrowLeft size={12} />
             VOLVER AL PIPELINE
           </Link>
         </div>
@@ -995,59 +1198,114 @@ export default function CrmApplicationDetail() {
           </div>
 
           <div style={{ display: 'flex', gap: '1.2rem', alignItems: 'center' }}>
-            {application?.status_key === 'interview_scheduled' && !isInterviewPassed ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.6rem 1.2rem', background: 'rgba(255,255,255,0.05)', borderRadius: '12px', border: '1px solid var(--border-light)' }}>
-                <Clock size={12} className="animate-pulse" style={{ color: 'var(--warning)' }} />
-                <span className="mono" style={{ fontSize: '0.65rem', fontWeight: 800, opacity: 0.8 }}>
-                  ESPERANDO A QUE SE REALICE LA ENTREVISTA ({formatDateTime(activeInterview?.scheduled_at)})
-                </span>
+            {application?.status_key === 'hired' ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.6rem 1.2rem', background: 'rgba(34,197,94,0.08)', borderRadius: '12px', border: '1px solid #22c55e' }}>
+                <CheckCircle size={12} style={{ color: '#22c55e' }} />
+                <span className="mono" style={{ fontSize: '0.65rem', fontWeight: 800, color: '#16a34a' }}>PROCESO COMPLETADO</span>
+              </div>
+            ) : application?.status_key === 'rejected' ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.6rem 1.2rem', background: 'rgba(239,68,68,0.06)', borderRadius: '12px', border: '1px solid #ef4444' }}>
+                <XCircle size={12} style={{ color: '#ef4444' }} />
+                <span className="mono" style={{ fontSize: '0.65rem', fontWeight: 800, color: '#dc2626' }}>CANDIDATO NO SELECCIONADO</span>
               </div>
             ) : (
               <>
                 <span className="mono" style={{ fontSize: '0.65rem', fontWeight: 800, opacity: 0.6 }}>SIGUIENTE ACCIÓN:</span>
 
-                {/* Casos donde faltan documentos: Mostramos botón de IR A VALIDAR y Rechazo */}
-                {!stageConfig.docsValidated && ['new', 'validation', 'docs_validation'].includes(application?.status_key || '') ? (
+                {/* new/validation: sin docs validados → ir a validar */}
+                {!stageConfig.docsValidated && ['new', 'validation'].includes(application?.status_key || '') ? (
                   <div style={{ display: 'flex', gap: '0.6rem' }}>
-                    <button
-                      className="btn-magnetic"
-                      onClick={() => setActiveTab('documents')}
-                      style={{
-                        padding: '0.7rem 1.4rem',
-                        fontSize: '0.65rem',
-                        background: 'var(--accent)',
-                        color: 'white',
-                        border: 'none',
-                        fontWeight: 900,
-                        borderRadius: '12px'
-                      }}
-                    >
-                      📂 VALIDAR DOCUMENTOS
+                    <button className="btn-magnetic" onClick={() => setActiveTab('documents')} style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: 'var(--accent)', color: 'white', border: 'none', fontWeight: 900, borderRadius: '12px' }}>
+                      VALIDAR DOCUMENTOS
+                    </button>
+                    <button className="btn-magnetic" onClick={() => { setNextStatus('rejected'); document.getElementById('status-transition-form')?.scrollIntoView({ behavior: 'smooth' }); }} style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: 'rgba(239,68,68,0.05)', color: 'var(--danger)', border: '1px solid currentColor', fontWeight: 900, borderRadius: '12px' }}>
+                      NO SELECCIONADO
+                    </button>
+                  </div>
+
+                ) : stageConfig.docsValidated && ['new', 'validation'].includes(application?.status_key || '') ? (
+                  /* docs validados → elegir siguiente etapa */
+                  <div style={{ display: 'flex', gap: '0.6rem' }}>
+                    <button className="btn-magnetic" onClick={() => {
+                      setActiveTab('profile');
+                      if (application?.suggested_slot_1) {
+                        setTimeout(() => document.getElementById('slot-confirmation-panel')?.scrollIntoView({ behavior: 'smooth' }), 80);
+                      } else {
+                        setNextStatus('virtual_scheduled');
+                        setShowManualTransition(true);
+                        setTimeout(() => document.getElementById('status-transition-form')?.scrollIntoView({ behavior: 'smooth' }), 80);
+                      }
+                    }} style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: 'var(--accent)', color: 'white', border: 'none', fontWeight: 900, borderRadius: '12px' }}>
+                      REUNIÓN VIRTUAL
+                    </button>
+                    <button className="btn-magnetic" onClick={() => {
+                      setActiveTab('profile');
+                      setNextStatus('rejected');
+                      setShowManualTransition(true);
+                      setTimeout(() => document.getElementById('status-transition-form')?.scrollIntoView({ behavior: 'smooth' }), 80);
+                    }} style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: 'rgba(239,68,68,0.05)', color: 'var(--danger)', border: '1px solid currentColor', fontWeight: 900, borderRadius: '12px' }}>
+                      NO SELECCIONADO
+                    </button>
+                  </div>
+
+                ) : application?.status_key === 'documents_pending' ? (
+                  <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
+                    <button className="btn-magnetic" onClick={() => setActiveTab('documents')} style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: 'rgba(61,90,254,0.08)', color: 'var(--accent)', border: '1px solid var(--accent)', fontWeight: 900, borderRadius: '12px' }}>
+                      REVISAR DOCUMENTOS
                     </button>
                     <button
                       className="btn-magnetic"
-                      onClick={() => {
-                        setNextStatus('rejected');
-                        const el = document.getElementById('status-transition-form');
-                        el?.scrollIntoView({ behavior: 'smooth' });
-                      }}
-                      style={{
-                        padding: '0.7rem 1.4rem',
-                        fontSize: '0.65rem',
-                        background: 'rgba(239, 68, 68, 0.05)',
-                        color: 'var(--danger)',
-                        border: '1px solid currentColor',
-                        fontWeight: 900,
-                        borderRadius: '12px'
-                      }}
+                      onClick={completeExpediente}
+                      disabled={!stageConfig.allRequiredValidated}
+                      style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: stageConfig.allRequiredValidated ? 'var(--accent)' : 'rgba(61,90,254,0.08)', color: stageConfig.allRequiredValidated ? 'white' : 'var(--text-dim)', border: 'none', fontWeight: 900, borderRadius: '12px', opacity: stageConfig.allRequiredValidated ? 1 : 0.45, cursor: stageConfig.allRequiredValidated ? 'pointer' : 'not-allowed', transition: 'opacity 0.2s' }}
+                      title={!stageConfig.allRequiredUploaded ? 'Faltan documentos obligatorios por subir' : !stageConfig.allRequiredValidated ? 'Faltan documentos por validar' : ''}
+                    >
+                      EXPEDIENTE COMPLETO →
+                    </button>
+                  </div>
+
+                ) : application?.status_key === 'documents_complete' ? (
+                  <button className="btn-magnetic" onClick={() => document.getElementById('onboarding-panel')?.scrollIntoView({ behavior: 'smooth' })} style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: 'var(--accent)', color: 'white', border: 'none', fontWeight: 900, borderRadius: '12px' }}>
+                    PROGRAMAR ONBOARDING ↓
+                  </button>
+
+                ) : application?.status_key === 'onboarding' ? (
+                  <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
+                    {!onboardingSaved && (
+                      <span className="mono" style={{ fontSize: '0.6rem', opacity: 0.5 }}>GUARDA EL PLAN PRIMERO ↓</span>
+                    )}
+                    <button
+                      className="btn-magnetic"
+                      disabled={!onboardingSaved}
+                      onClick={() => { setNextStatus('hired'); setShowManualTransition(true); setTimeout(() => document.getElementById('status-transition-form')?.scrollIntoView({ behavior: 'smooth' }), 50); }}
+                      style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: onboardingSaved ? 'var(--accent)' : 'var(--bg-accent)', color: onboardingSaved ? 'white' : 'var(--text-muted)', border: 'none', fontWeight: 900, borderRadius: '12px', opacity: onboardingSaved ? 1 : 0.5, cursor: onboardingSaved ? 'pointer' : 'not-allowed' }}
+                    >
+                      CONTRATADO ✓
+                    </button>
+                    <button
+                      className="btn-magnetic"
+                      disabled={!onboardingSaved}
+                      onClick={() => { setNextStatus('rejected'); setShowManualTransition(true); setTimeout(() => document.getElementById('status-transition-form')?.scrollIntoView({ behavior: 'smooth' }), 50); }}
+                      style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: 'rgba(239,68,68,0.05)', color: onboardingSaved ? 'var(--danger)' : 'var(--text-muted)', border: `1px solid ${onboardingSaved ? 'currentColor' : 'var(--border-light)'}`, fontWeight: 900, borderRadius: '12px', opacity: onboardingSaved ? 1 : 0.5, cursor: onboardingSaved ? 'pointer' : 'not-allowed' }}
                     >
                       NO SELECCIONADO
                     </button>
                   </div>
+
+                ) : application?.status_key === 'onboarding_scheduled' ? (
+                  <div style={{ display: 'flex', gap: '0.6rem' }}>
+                    <button className="btn-magnetic" onClick={() => { setNextStatus('hired'); setShowManualTransition(true); setTimeout(() => document.getElementById('status-transition-form')?.scrollIntoView({ behavior: 'smooth' }), 50); }} style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: 'var(--accent)', color: 'white', border: 'none', fontWeight: 900, borderRadius: '12px' }}>
+                      CONTRATADO ✓
+                    </button>
+                    <button className="btn-magnetic" onClick={() => { setNextStatus('rejected'); setShowManualTransition(true); setTimeout(() => document.getElementById('status-transition-form')?.scrollIntoView({ behavior: 'smooth' }), 50); }} style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: 'rgba(239,68,68,0.05)', color: 'var(--danger)', border: '1px solid currentColor', fontWeight: 900, borderRadius: '12px' }}>
+                      NO SELECCIONADO
+                    </button>
+                  </div>
+
                 ) : (
                   <div style={{ display: 'flex', gap: '0.6rem' }}>
                     {allowedTransitions.sort((a, b) => {
-                      const priority = ['virtual_pending', 'rejected'];
+                      const priority = ['virtual_scheduled', 'rejected'];
                       const ai = priority.indexOf(a);
                       const bi = priority.indexOf(b);
                       if (ai !== -1 && bi !== -1) return ai - bi;
@@ -1066,9 +1324,9 @@ export default function CrmApplicationDetail() {
                         style={{
                           padding: '0.7rem 1.4rem',
                           fontSize: '0.65rem',
-                          background: st === 'rejected' ? 'rgba(239, 68, 68, 0.05)' : (st === 'virtual_pending' ? 'var(--accent)' : 'var(--bg-accent)'),
-                          color: st === 'rejected' ? 'var(--danger)' : (st === 'virtual_pending' ? 'white' : 'var(--accent)'),
-                          border: st === 'virtual_pending' ? 'none' : '1px solid currentColor',
+                          background: st === 'rejected' ? 'rgba(239, 68, 68, 0.05)' : (st === 'virtual_scheduled' ? 'var(--accent)' : 'var(--bg-accent)'),
+                          color: st === 'rejected' ? 'var(--danger)' : (st === 'virtual_scheduled' ? 'white' : 'var(--accent)'),
+                          border: st === 'virtual_scheduled' ? 'none' : '1px solid currentColor',
                           fontWeight: 900,
                           borderRadius: '12px'
                         }}
@@ -1086,12 +1344,11 @@ export default function CrmApplicationDetail() {
 
         <header style={{
           background: 'var(--bg-card)',
-          padding: '1rem 2.5rem',
+          padding: '0 2.5rem',
           borderRadius: '16px',
           border: '1px solid var(--border-light)',
           display: 'flex',
-          gap: '3rem',
-          position: 'static', // Back to normal flow as requested
+          position: 'static',
           boxShadow: '0 4px 15px rgba(0,0,0,0.03)',
           marginBottom: '1rem'
         }}>
@@ -1101,6 +1358,7 @@ export default function CrmApplicationDetail() {
               className={`tab-btn ${activeTab === t.id ? 'active' : ''}`}
               onClick={() => setActiveTab(t.id as any)}
               style={{
+                flex: 1,
                 background: 'none',
                 border: 'none',
                 padding: '1.2rem 0',
@@ -1113,6 +1371,7 @@ export default function CrmApplicationDetail() {
                 letterSpacing: '0.15em',
                 display: 'flex',
                 alignItems: 'center',
+                justifyContent: 'center',
                 gap: '0.6rem',
                 transition: 'all 0.3s ease',
                 opacity: activeTab === t.id ? 1 : 0.6
@@ -1134,218 +1393,376 @@ export default function CrmApplicationDetail() {
 
           {activeTab === 'profile' && (
             <div className="reveal">
-              {/* Sección de disponibilidad Prioritaria */}
-              {application?.suggested_slot_1 && !application?.meet_link && ['new', 'docs_validation', 'virtual_pending'].includes(application.status_key) && (
-                <div className="pro-card" style={{ marginBottom: '2.5rem', border: '2px solid var(--accent)', background: 'linear-gradient(135deg, rgba(61, 90, 254, 0.05) 0%, rgba(61, 90, 254, 0.02) 100%)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '2rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '1rem' }}>
-                      <div style={{ padding: '0.8rem', background: 'var(--accent)', borderRadius: '12px', color: 'white' }}>
-                        <AlertCircle size={24} />
-                      </div>
-                      <div>
-                        <span className="mono" style={{ fontSize: '0.6rem', color: 'var(--accent)', fontWeight: 800 }}>// ACCIÓN CRÍTICA REQUERIDA</span>
-                        <h3 style={{ fontSize: '1.8rem', marginTop: '0.2rem' }}>VALIDAR DISPONIBILIDAD</h3>
-                      </div>
-                    </div>
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1.5rem' }}>
-                    {[application.suggested_slot_1, application.suggested_slot_2, application.suggested_slot_3].filter(Boolean).map((slot, i) => (
-                      <button key={i} className="glass-card btn-magnetic" onClick={() => scheduleVirtualInterview(slot!)} disabled={scheduling} style={{ padding: '1.5rem', border: '1px solid var(--border-light)', textAlign: 'left', transition: 'all 0.2s ease', position: 'relative', overflow: 'hidden' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '1rem' }}>
-                          <Clock size={10} style={{ opacity: 0.6 }} />
-                          <div className="mono" style={{ fontSize: '0.55rem', opacity: 0.6 }}>OPCIÓN AGENDADA {i + 1}</div>
-                        </div>
-                        <div style={{ fontWeight: 900, fontSize: '1.1rem', lineHeight: '1.2', marginBottom: '1.2rem' }}>
-                          {new Intl.DateTimeFormat('es-MX', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'America/Mexico_City' }).format(new Date(slot!)).toUpperCase()}
-                        </div>
-                        <div style={{ fontSize: '0.65rem', color: 'var(--accent)', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                          {scheduling ? (
-                            <Clock size={12} className="animate-spin" />
-                          ) : (
-                            <Video size={12} />
-                          )}
-                          {scheduling ? "SINCRONIZANDO..." : "CONFIRMAR MEET"}
-                          <ArrowRight size={12} style={{ marginLeft: 'auto' }} />
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {application?.meet_link && (
-                <div className="pro-card" style={{ marginBottom: '2.5rem', background: 'var(--accent)', color: 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 15px 35px rgba(61, 90, 254, 0.2)', padding: '2rem 2.5rem' }}>
-                  <div style={{ flex: 1 }}>
-                    <h3 style={{ margin: 0, fontSize: '1.4rem' }}>MEET CONFIGURADO</h3>
-                  </div>
-                  <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                    {isMeetJoinable ? (
-                      <a href={application.meet_link} target="_blank" rel="noreferrer" className="btn-magnetic" style={{ margin: '1rem 0', background: 'white', color: 'var(--accent)', padding: '1rem 2rem', fontWeight: 800, borderRadius: 'var(--radius-pro)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14v-4z"></path><rect x="3" y="6" width="12" height="12" rx="2" ry="2"></rect></svg>
-                        UNIRSE AHORA
-                      </a>
-                    ) : (
-                      <button disabled className="btn-magnetic" style={{ margin: '1rem 0', background: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.4)', padding: '1rem 2rem', fontWeight: 800, borderRadius: 'var(--radius-pro)', border: 'none', cursor: 'not-allowed', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ opacity: 0.4 }}><path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14v-4z"></path><rect x="3" y="6" width="12" height="12" rx="2" ry="2"></rect></svg>
-                        UNIRSE AHORA
-                      </button>
-                    )}
-                    {!isMeetJoinable && (
-                      <span className="mono" style={{ fontSize: '0.65rem', color: '#ffe082', display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 700, position: 'absolute', top: 'calc(100% + 8px)', left: '50%', transform: 'translateX(-50%)', whiteSpace: 'nowrap' }}>
-                        <Clock size={10} />
-                        SE HABILITARÁ 30 MIN ANTES DE LA REUNIÓN
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              <div className="detail-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
-                <div className="card" style={{ padding: '2rem', borderRadius: 'var(--radius-pro)', border: '1px solid var(--border-light)' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '2rem' }}>
-                    <GraduationCap size={18} style={{ color: 'var(--accent)' }} />
-                    <h3 className="mono" style={{ fontSize: '0.8rem', letterSpacing: '0.1em' }}>DATOS COMPLEMENTARIOS</h3>
-                  </div>
-                  <div className="detail-list" style={{ display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-light)', paddingBottom: '0.8rem' }}>
-                      <span style={{ fontSize: '0.8rem', opacity: 0.6 }}>Grado Académico</span>
-                      <strong style={{ fontSize: '0.85rem' }}>{application.recruit_candidates?.education_level}</strong>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-light)', paddingBottom: '0.8rem' }}>
-                      <span style={{ fontSize: '0.8rem', opacity: 0.6 }}>Estado de Certificado</span>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                        {application.recruit_candidates?.has_education_certificate ? <CheckCircle2 size={12} style={{ color: 'var(--success)' }} /> : <AlertCircle size={12} style={{ color: 'var(--warning)' }} />}
-                        <strong style={{ fontSize: '0.85rem' }}>{application.recruit_candidates?.has_education_certificate ? "COMPLETADO" : "PENDIENTE"}</strong>
-                      </div>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '0.8rem', opacity: 0.6 }}>Fecha de Postulación</span>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                        <Clock size={12} style={{ opacity: 0.4 }} />
-                        <strong style={{ fontSize: '0.85rem' }}>{formatDateTime(application.submitted_at)}</strong>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+              <div style={{ marginBottom: '2rem' }}>
                 <div className="card" style={{ padding: '2rem', borderRadius: 'var(--radius-pro)', border: '1px solid var(--border-light)' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '2rem' }}>
                     <History size={18} style={{ color: 'var(--accent)' }} />
-                    <h3 className="mono" style={{ fontSize: '0.8rem', letterSpacing: '0.1em' }}>TRAZA DE MOVIMIENTOS</h3>
+                    <h3 className="mono" style={{ fontSize: '0.8rem', letterSpacing: '0.1em' }}>LÍNEA DE TIEMPO</h3>
                   </div>
-                  <div className="timeline-compact" style={{ maxHeight: '250px', overflowY: 'auto', paddingRight: '0.5rem' }}>
-                    {statusHistory.map(h => (
-                      <div key={h.id} style={{ fontSize: '0.75rem', padding: '1rem 0', borderBottom: '1px solid var(--border-light)' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                          <strong>{statusMap[h.status_key]?.label || h.status_key}</strong>
-                          <small style={{ opacity: 0.5 }}>{new Intl.DateTimeFormat('es-MX', { dateStyle: 'short', timeZone: 'America/Mexico_City' }).format(new Date(h.changed_at))}</small>
+                  <div style={{ maxHeight: '400px', overflowY: 'auto', paddingRight: '0.5rem' }}>
+                    {statusHistory.length === 0 && (
+                      <p style={{ fontSize: '0.72rem', opacity: 0.4, textAlign: 'center', padding: '1.5rem 0' }}>Sin movimientos registrados</p>
+                    )}
+                    {statusHistory.map((h, idx) => {
+                      const cat = statusMap[h.status_key]?.category ?? 'pipeline';
+                      const isNegative = h.status_key === 'rejected';
+                      const isPositive = ['hired', 'virtual_done'].includes(h.status_key);
+                      const isInterview = cat === 'interview' || h.status_key === 'virtual_scheduled';
+                      const isOnboarding = ['onboarding', 'onboarding_scheduled'].includes(h.status_key);
+                      const color = isNegative ? '#ef4444'
+                        : isPositive ? '#22c55e'
+                          : isInterview ? '#8b5cf6'
+                            : isOnboarding ? '#f59e0b'
+                              : 'var(--accent)';
+                      const IconComp = isNegative ? XCircle
+                        : h.status_key === 'hired' ? Award
+                          : h.status_key === 'new' ? UserPlus
+                            : h.status_key === 'validation' ? ClipboardList
+                              : isOnboarding ? Briefcase
+                                : ['documents_pending', 'documents_complete'].includes(h.status_key) ? FileText
+                                  : isInterview ? Calendar
+                                    : isPositive ? CheckCircle
+                                      : ArrowRight;
+                      const isLast = idx === statusHistory.length - 1;
+                      return (
+                        <div key={h.id} style={{ display: 'flex', gap: '1rem', position: 'relative' }}>
+                          {/* Columna izquierda: ícono + línea */}
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
+                            <div style={{ width: '34px', height: '34px', borderRadius: '50%', background: `${color}18`, border: `2px solid ${color}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              <IconComp size={14} style={{ color }} />
+                            </div>
+                            {!isLast && <div style={{ width: '2px', flex: 1, minHeight: '16px', background: 'var(--border-light)', margin: '4px 0' }} />}
+                          </div>
+                          {/* Columna derecha: contenido */}
+                          <div style={{ flex: 1, paddingBottom: isLast ? '0' : '1.1rem', paddingTop: '0.3rem' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
+                              <span style={{ fontSize: '0.73rem', fontWeight: 700, color, lineHeight: 1.3 }}>
+                                {statusMap[h.status_key]?.label || h.status_key}
+                              </span>
+                              <span style={{ fontSize: '0.63rem', opacity: 0.45, whiteSpace: 'nowrap', flexShrink: 0, paddingTop: '0.05rem' }}>
+                                {new Intl.DateTimeFormat('es-MX', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'America/Mexico_City' }).format(new Date(h.changed_at))}
+                              </span>
+                            </div>
+                            {h.reason && (
+                              <p style={{ margin: '0.25rem 0 0', fontSize: '0.66rem', opacity: 0.6, lineHeight: 1.4 }}>{h.reason}</p>
+                            )}
+                          </div>
                         </div>
-                        <p style={{ opacity: 0.7, fontSize: '0.7rem' }}>{h.reason}</p>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               </div>
 
-              <div id="status-transition-form" className="card" style={{ marginTop: '2rem', padding: '2.5rem', border: nextStatus ? '2px solid var(--accent)' : '1px solid var(--border-light)', transition: 'all 0.3s ease' }}>
-                <span className="mono" style={{ fontSize: '0.6rem', color: 'var(--accent)' }}>// CONTROL DE FLUJO MANUAL</span>
-                <h3 style={{ marginBottom: '1.5rem' }}>TRANSICIÓN DE ESTADO</h3>
+              {/* ─── INTERVIEW SIGN OFF PANEL ─── */}
+              {activeInterview && application?.status_key === 'virtual_scheduled' && (
+                <div className="reveal" style={{ marginBottom: '2rem' }}>
+                  <div className="pro-card" style={{ border: '2px solid var(--accent)', background: 'linear-gradient(135deg, rgba(61, 90, 254, 0.06) 0%, rgba(61, 90, 254, 0.02) 100%)' }}>
 
-                {application?.status_key === 'interview_scheduled' && !isInterviewPassed ? (
-                  <div className="pro-card" style={{ textAlign: 'center', padding: '3rem', border: '1px dashed var(--border-light)', borderRadius: '16px', background: 'rgba(255,255,255,0.01)' }}>
-                    <div style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'center' }}>
-                      <div style={{ padding: '1rem', background: 'rgba(61, 90, 254, 0.1)', borderRadius: '50%', color: 'var(--accent)' }}>
-                        <Clock size={32} />
+                    {/* Cabecera: fecha + botón meet */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.8rem' }}>
+                        <div style={{ padding: '0.7rem', background: 'var(--accent)', borderRadius: '12px', color: 'white', flexShrink: 0 }}>
+                          <Video size={20} />
+                        </div>
+                        <div>
+                          <span className="mono" style={{ fontSize: '0.55rem', color: 'var(--accent)', fontWeight: 800 }}>// ENTREVISTA VIRTUAL AGENDADA</span>
+                          <h3 style={{ margin: '0.1rem 0 0', fontSize: '1.3rem' }}>{formatDateTime(activeInterview.scheduled_at)}</h3>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.4rem' }}>
+                        {isMeetJoinable ? (
+                          <a href={application?.meet_link ?? '#'} target="_blank" rel="noreferrer" className="btn-magnetic" style={{ background: 'var(--accent)', color: 'white', padding: '0.7rem 1.4rem', fontWeight: 800, borderRadius: '12px', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.7rem', pointerEvents: application?.meet_link ? 'auto' : 'none', opacity: application?.meet_link ? 1 : 0.5 }}>
+                            <Video size={14} /> UNIRSE AHORA
+                          </a>
+                        ) : (
+                          <button disabled style={{ background: 'rgba(61,90,254,0.08)', color: 'var(--accent)', padding: '0.7rem 1.4rem', fontWeight: 800, borderRadius: '12px', border: '1px dashed var(--accent)', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.7rem', cursor: 'not-allowed', opacity: 0.5 }}>
+                            <Video size={14} /> UNIRSE AHORA
+                          </button>
+                        )}
+                        {!isMeetJoinable && (
+                          <span className="mono" style={{ fontSize: '0.55rem', color: 'var(--warning)', display: 'flex', alignItems: 'center', gap: '0.3rem', fontWeight: 700 }}>
+                            <Clock size={10} /> SE HABILITA 30 MIN ANTES
+                          </span>
+                        )}
                       </div>
                     </div>
-                    <h4 className="mono" style={{ fontSize: '0.9rem', marginBottom: '0.5rem' }}>ENTREVISTA POR REALIZAR</h4>
-                    <p style={{ opacity: 0.6, fontSize: '0.75rem', maxWidth: '300px', margin: '0 auto' }}>
-                      Las acciones de evaluación se habilitarán automáticamente una vez pase la hora programada: <br />
-                      <strong style={{ color: 'var(--accent)' }}>{formatDateTime(activeInterview?.scheduled_at)}</strong>
-                    </p>
-                  </div>
-                ) : (
-                  <form onSubmit={handleStatusChange} className="form-stack">
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '1rem', marginBottom: '1rem' }}>
-                      <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>FASE DESTINO
-                        <select className="input" value={nextStatus} onChange={e => setNextStatus(e.target.value)} style={{ marginTop: '0.5rem' }}>
-                          <option value="">Selecciona...</option>
-                          {allowedTransitions.map(st => <option key={st} value={st}>{statusMap[st]?.label || st}</option>)}
+
+                    <div style={{ borderTop: '1px solid var(--border-light)', paddingTop: '1.5rem' }} className="form-stack">
+                      <label style={{ fontSize: '0.6rem', fontWeight: 800, color: 'var(--text-dim)' }}>DICTAMEN DE EVALUACIÓN
+                        <select className="input" style={{ marginTop: '0.4rem' }} value={interviewResult} onChange={e => setInterviewResult(e.target.value)}>
+                          <option value="pending">Pendiente</option>
+                          <option value="pass">Aprobado — pasar a la siguiente fase</option>
+                          <option value="fail">No aprobado — cerrar solicitud</option>
                         </select>
                       </label>
-                      <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>MOTIVO DEL CAMBIO
-                        <input className="input" placeholder="Justifica este movimiento..." value={statusReason} onChange={e => setStatusReason(e.target.value)} style={{ marginTop: '0.5rem' }} />
+                      <label style={{ fontSize: '0.6rem', fontWeight: 800, color: 'var(--text-dim)' }}>OBSERVACIONES Y FEEDBACK
+                        <textarea className="input" style={{ marginTop: '0.4rem', minHeight: '90px' }} placeholder="Fortalezas, áreas de mejora, notas del entrevistador..." value={interviewNotes} onChange={e => setInterviewNotes(e.target.value)} />
                       </label>
+                      <button
+                        className="btn-magnetic"
+                        onClick={handleInterviewSignOff}
+                        disabled={interviewSaving || interviewResult === 'pending'}
+                        style={{ width: '100%', padding: '0.9rem', background: 'var(--accent)', color: 'white', fontWeight: 800, borderRadius: '12px', border: 'none', opacity: interviewResult === 'pending' ? 0.4 : 1, cursor: interviewResult === 'pending' ? 'not-allowed' : 'pointer', transition: 'opacity 0.2s' }}
+                      >
+                        {interviewSaving ? 'GUARDANDO...' : 'CERRAR FASE DE ENTREVISTA'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ─── ONBOARDING PANEL ─── */}
+              {(['documents_complete', 'onboarding', 'onboarding_scheduled'].includes(application?.status_key || '')) && (
+                <div id="onboarding-panel" className="reveal" style={{ animationDelay: '0.3s', marginBottom: '2rem' }}>
+                  <div className="pro-card" style={{ border: `2px solid ${onboardingSaved && !onboardingEditMode ? '#22c55e' : 'var(--accent)'}`, background: onboardingSaved && !onboardingEditMode ? 'linear-gradient(135deg, rgba(34,197,94,0.06) 0%, rgba(34,197,94,0.02) 100%)' : 'linear-gradient(135deg, rgba(61,90,254,0.05) 0%, rgba(61,90,254,0.02) 100%)' }}>
+
+                    {/* ── CABECERA ── */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.8rem' }}>
+                        {onboardingSaved && !onboardingEditMode
+                          ? <CheckCircle size={20} style={{ color: '#22c55e' }} />
+                          : <Briefcase size={20} style={{ color: 'var(--accent)' }} />
+                        }
+                        <div>
+                          <span className="mono" style={{ fontSize: '0.55rem', fontWeight: 800, color: onboardingSaved && !onboardingEditMode ? '#16a34a' : 'var(--accent)' }}>
+                            {onboardingSaved && !onboardingEditMode ? '// PLAN CONFIRMADO' : '// PLAN DE ONBOARDING'}
+                          </span>
+                          <h3 style={{ margin: '0.1rem 0 0', fontSize: '1.1rem' }}>ONBOARDING</h3>
+                        </div>
+                      </div>
+                      {onboardingSaved && !onboardingEditMode && (
+                        <button
+                          className="btn-ghost"
+                          onClick={() => setOnboardingEditMode(true)}
+                          style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.65rem', padding: '0.5rem 1rem', borderRadius: '10px' }}
+                        >
+                          <Pencil size={12} /> EDITAR
+                        </button>
+                      )}
                     </div>
 
-                    {nextStatus === 'interview_scheduled' && (
-                      <div className="reveal" style={{ padding: '1.5rem', background: 'var(--bg-accent)', borderRadius: '16px', marginBottom: '1.5rem', border: '1px dashed var(--accent)' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+                    {/* ── VISTA RESUMEN (plan guardado) ── */}
+                    {onboardingSaved && !onboardingEditMode ? (
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.2rem' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                          <span className="mono" style={{ fontSize: '0.55rem', fontWeight: 800, opacity: 0.5 }}>FECHA Y HORA</span>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                            <Calendar size={14} style={{ color: 'var(--accent)' }} />
-                            <span className="mono" style={{ fontSize: '0.65rem', fontWeight: 800 }}>
-                              {application?.suggested_slot_1 ? 'HORARIOS PROPUESTOS POR EL CANDIDATO' : 'CONFIGURAR PROPUESTA DE HORARIOS'}
+                            <Calendar size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                            <span style={{ fontWeight: 700, fontSize: '0.85rem' }}>
+                              {onboardingForm.scheduled_at
+                                ? new Intl.DateTimeFormat('es-MX', { dateStyle: 'long', timeStyle: 'short', timeZone: 'America/Mexico_City' }).format(new Date(onboardingForm.scheduled_at))
+                                : '—'}
                             </span>
                           </div>
                         </div>
-
-                        <div className="slots-container" style={{
-                          display: 'grid',
-                          gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))',
-                          gap: '0.6rem',
-                          maxHeight: '300px',
-                          overflowY: 'auto',
-                          padding: '0.5rem'
-                        }}>
-                          {availableSlots.map((val: any) => {
-                            const iso = typeof val === 'string' ? val : val.toISOString();
-                            const tDate = new Date(iso).getTime();
-                            const isSelected = slot1 && new Date(slot1).getTime() === tDate;
-
-                            const displayDate = iso.split('T')[0];
-                            const displayTime = iso.split('T')[1].substring(0, 5);
-
-                            return (
-                              <button
-                                key={iso}
-                                type="button"
-                                onClick={() => {
-                                  if (isSelected) {
-                                    setSlot1("");
-                                  } else {
-                                    setSlot1(iso);
-                                  }
-                                }}
-                                style={{
-                                  padding: '1rem 0.5rem',
-                                  borderRadius: '12px',
-                                  border: isSelected ? '2.5px solid var(--accent)' : '1px solid var(--border-light)',
-                                  background: isSelected ? 'rgba(61, 90, 254, 0.1)' : 'var(--bg-card)',
-                                  cursor: 'pointer',
-                                  transition: 'all 0.2s ease',
-                                  textAlign: 'center'
-                                }}
-                              >
-                                <div style={{ fontSize: '0.65rem', fontWeight: 800, marginBottom: '0.4rem', opacity: 0.6 }}>
-                                  {displayDate}
-                                </div>
-                                <div style={{ fontSize: '1rem', fontWeight: 900, color: isSelected ? 'var(--accent)' : 'inherit' }}>
-                                  {displayTime}
-                                </div>
-                              </button>
-                            );
-                          })}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                          <span className="mono" style={{ fontSize: '0.55rem', fontWeight: 800, opacity: 0.5 }}>LUGAR</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <MapPin size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                            <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>{onboardingForm.location || '—'}</span>
+                          </div>
                         </div>
-
-                        {statusError && <p className="error" style={{ marginTop: '1rem' }}>{statusError}</p>}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                          <span className="mono" style={{ fontSize: '0.55rem', fontWeight: 800, opacity: 0.5 }}>VESTIMENTA</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <Briefcase size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                            <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>{onboardingForm.dress_code || '—'}</span>
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                          <span className="mono" style={{ fontSize: '0.55rem', fontWeight: 800, opacity: 0.5 }}>ANFITRIÓN</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <User size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                            <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>
+                              {hosts.find(h => h.id === onboardingForm.host_id)?.full_name || '—'}
+                            </span>
+                          </div>
+                        </div>
+                        {onboardingForm.notes && (
+                          <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: '0.3rem', paddingTop: '0.8rem', borderTop: '1px solid var(--border-light)' }}>
+                            <span className="mono" style={{ fontSize: '0.55rem', fontWeight: 800, opacity: 0.5 }}>INSTRUCCIONES</span>
+                            <p style={{ margin: 0, fontSize: '0.8rem', opacity: 0.8, lineHeight: 1.5 }}>{onboardingForm.notes}</p>
+                          </div>
+                        )}
                       </div>
+                    ) : (
+                      /* ── FORMULARIO (sin plan o editando) ── */
+                      <form onSubmit={handleOnboardingSubmit} className="form-stack">
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                          <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>FECHA Y HORA DE INGRESO *
+                            <input
+                              type="datetime-local"
+                              className="input"
+                              value={onboardingForm.scheduled_at}
+                              onChange={e => setOnboardingForm(p => ({ ...p, scheduled_at: e.target.value }))}
+                              style={{ marginTop: '0.5rem' }}
+                              required
+                            />
+                          </label>
+                          <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>LUGAR / SUCURSAL
+                            <input
+                              className="input"
+                              placeholder="Ej: Oficinas Corporativas, Piso 2"
+                              value={onboardingForm.location}
+                              onChange={e => setOnboardingForm(p => ({ ...p, location: e.target.value }))}
+                              style={{ marginTop: '0.5rem' }}
+                            />
+                          </label>
+                          <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>CÓDIGO DE VESTIMENTA
+                            <input
+                              className="input"
+                              placeholder="Ej: Formal, Casual, Uniforme"
+                              value={onboardingForm.dress_code}
+                              onChange={e => setOnboardingForm(p => ({ ...p, dress_code: e.target.value }))}
+                              style={{ marginTop: '0.5rem' }}
+                            />
+                          </label>
+                          <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>ANFITRIÓN / RESPONSABLE *
+                            <select
+                              className="input"
+                              value={onboardingForm.host_id}
+                              onChange={e => setOnboardingForm(p => ({ ...p, host_id: e.target.value }))}
+                              style={{ marginTop: '0.5rem' }}
+                              required
+                            >
+                              <option value="">— Seleccionar anfitrión —</option>
+                              {hosts.map(h => (
+                                <option key={h.id} value={h.id}>{h.full_name} ({h.email})</option>
+                              ))}
+                            </select>
+                            {hosts.length === 0 && (
+                              <small style={{ color: 'var(--warning)', marginTop: '0.3rem', display: 'block' }}>
+                                Sin anfitriones registrados. Agrégalos en Admin → Anfitriones.
+                              </small>
+                            )}
+                          </label>
+                        </div>
+                        <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>INSTRUCCIONES ADICIONALES
+                          <textarea
+                            className="input"
+                            placeholder="Indicaciones especiales, documentos a traer, estacionamiento, etc."
+                            value={onboardingForm.notes}
+                            onChange={e => setOnboardingForm(p => ({ ...p, notes: e.target.value }))}
+                            style={{ marginTop: '0.5rem', minHeight: '80px' }}
+                          />
+                        </label>
+                        {onboardingError && <p className="error">{onboardingError}</p>}
+                        <div style={{ display: 'flex', gap: '0.8rem' }}>
+                          {onboardingSaved && (
+                            <button type="button" className="btn-ghost" onClick={() => setOnboardingEditMode(false)} style={{ padding: '1rem', fontWeight: 800, flex: '0 0 auto' }}>
+                              CANCELAR
+                            </button>
+                          )}
+                          <button type="submit" className="btn-primary" disabled={onboardingSaving} style={{ padding: '1rem', flex: 1, fontWeight: 800 }}>
+                            {onboardingSaving ? 'GUARDANDO...' : 'GUARDAR PLAN DE ONBOARDING'}
+                          </button>
+                        </div>
+                      </form>
                     )}
+                  </div>
+                </div>
+              )}
 
-                    <button className="btn-primary" type="submit" style={{ padding: '1rem', width: '100%', fontWeight: 800 }}>
-                      {statusSubmitting ? 'PROCESANDO...' : 'EJECUTAR TRANSICIÓN'}
-                    </button>
-                  </form>
+              {/* ─── PANEL DE HORARIOS PROPUESTOS ─── */}
+              {application?.suggested_slot_1 && !application?.meet_link && (application.status_key === 'virtual_scheduled' || (application.status_key === 'validation' && stageConfig.docsValidated)) && (
+                <div id="slot-confirmation-panel" className="pro-card" style={{ marginTop: '2rem', border: '2px solid var(--accent)', background: 'linear-gradient(135deg, rgba(61, 90, 254, 0.05) 0%, rgba(61, 90, 254, 0.02) 100%)' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '1rem', marginBottom: '2rem' }}>
+                    <div style={{ padding: '0.8rem', background: 'var(--accent)', borderRadius: '12px', color: 'white', flexShrink: 0 }}>
+                      <AlertCircle size={24} />
+                    </div>
+                    <div>
+                      <span className="mono" style={{ fontSize: '0.6rem', color: 'var(--accent)', fontWeight: 800 }}>// ACCIÓN REQUERIDA</span>
+                      <h3 style={{ fontSize: '1.5rem', marginTop: '0.2rem', marginBottom: '0.3rem' }}>CONFIRMAR HORARIO DE ENTREVISTA</h3>
+                      <p style={{ margin: 0, opacity: 0.6, fontSize: '0.75rem' }}>El candidato propuso los siguientes horarios. Selecciona uno para generar el Meet automáticamente.</p>
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+                    {[application.suggested_slot_1, application.suggested_slot_2, application.suggested_slot_3].filter(Boolean).map((slot, i) => {
+                      const date = new Date(slot!);
+                      const weekday = new Intl.DateTimeFormat('es-MX', { weekday: 'long', timeZone: 'America/Mexico_City' }).format(date).toUpperCase();
+                      const dayMonth = new Intl.DateTimeFormat('es-MX', { day: 'numeric', month: 'long', timeZone: 'America/Mexico_City' }).format(date).toUpperCase();
+                      const time = new Intl.DateTimeFormat('es-MX', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'America/Mexico_City' }).format(date).toUpperCase();
+                      return (
+                        <button
+                          key={i}
+                          onClick={() => scheduleVirtualInterview(slot!)}
+                          disabled={scheduling}
+                          style={{
+                            padding: 0, border: '1.5px solid var(--border-light)', borderRadius: '20px',
+                            textAlign: 'left', overflow: 'hidden', background: 'var(--bg-card)',
+                            display: 'flex', flexDirection: 'column', cursor: scheduling ? 'not-allowed' : 'pointer',
+                            transition: 'border-color 0.2s, box-shadow 0.2s',
+                            opacity: scheduling ? 0.6 : 1,
+                          }}
+                          onMouseEnter={e => { if (!scheduling) { (e.currentTarget as HTMLElement).style.borderColor = 'var(--accent)'; (e.currentTarget as HTMLElement).style.boxShadow = '0 0 0 3px rgba(61,90,254,0.12)'; } }}
+                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = 'var(--border-light)'; (e.currentTarget as HTMLElement).style.boxShadow = 'none'; }}
+                        >
+                          {/* Header con badge de opción */}
+                          <div style={{ padding: '1.25rem 1.5rem 1rem', flex: 1, display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                            <span className="mono" style={{ fontSize: '0.55rem', color: 'var(--text-dim)', letterSpacing: '0.1em' }}>OPCIÓN PROPUESTA</span>
+
+                            {/* Fecha */}
+                            <div>
+                              <div style={{ fontSize: '0.65rem', fontWeight: 800, color: 'var(--text-dim)', letterSpacing: '0.06em', marginBottom: '0.15rem' }}>{weekday}</div>
+                              <div style={{ fontSize: '1rem', fontWeight: 900, lineHeight: 1.2, letterSpacing: '-0.01em' }}>{dayMonth}</div>
+                            </div>
+
+                            {/* Hora */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 0.9rem', background: 'rgba(61,90,254,0.08)', borderRadius: '10px', border: '1px solid rgba(61,90,254,0.15)' }}>
+                              <Clock size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                              <span style={{ fontWeight: 900, fontSize: '1.1rem', color: 'var(--accent)', letterSpacing: '0.02em' }}>{time}</span>
+                            </div>
+                          </div>
+
+                          {/* CTA */}
+                          <div style={{ padding: '0.9rem 1.5rem', background: scheduling ? 'rgba(61,90,254,0.3)' : 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}>
+                            {scheduling ? <Clock size={13} className="animate-spin" style={{ color: 'white' }} /> : <Video size={13} style={{ color: 'white' }} />}
+                            <span style={{ color: 'white', fontWeight: 800, fontSize: '0.6rem', letterSpacing: '0.08em' }}>
+                              {scheduling ? 'GENERANDO MEET...' : 'CONFIRMAR Y GENERAR MEET'}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {!['hired', 'rejected'].includes(application?.status_key ?? '') && <div id="status-transition-form" style={{ marginTop: '2rem' }}>
+                <button
+                  onClick={() => setShowManualTransition(p => !p)}
+                  className="btn-ghost"
+                  style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.8rem 1.2rem', borderRadius: '12px', border: '1px solid var(--border-light)', background: 'transparent', fontSize: '0.6rem', fontWeight: 800, color: 'var(--text-dim)', letterSpacing: '0.08em' }}
+                >
+                  <span className="mono">// TRANSICIÓN MANUAL DE ESTADO</span>
+                  <span style={{ fontSize: '0.7rem', transition: 'transform 0.2s', display: 'inline-block', transform: showManualTransition ? 'rotate(180deg)' : 'rotate(0deg)' }}>▾</span>
+                </button>
+
+                {showManualTransition && (
+                  <div className="reveal" style={{ marginTop: '0.5rem', padding: '2rem', border: '1px solid var(--border-light)', borderRadius: '16px', background: 'var(--bg-card)' }}>
+                    {(
+                      <form onSubmit={handleStatusChange} className="form-stack">
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '1rem', marginBottom: '1rem' }}>
+                          <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>FASE DESTINO
+                            <select className="input" value={nextStatus} onChange={e => setNextStatus(e.target.value)} style={{ marginTop: '0.5rem' }}>
+                              <option value="">Selecciona...</option>
+                              {allowedTransitions.map(st => <option key={st} value={st}>{statusMap[st]?.label || st}</option>)}
+                            </select>
+                          </label>
+                          <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>MOTIVO DEL CAMBIO
+                            <input className="input" placeholder="Justifica este movimiento..." value={statusReason} onChange={e => setStatusReason(e.target.value)} style={{ marginTop: '0.5rem' }} />
+                          </label>
+                        </div>
+                        {statusError && <p className="error">{statusError}</p>}
+                        <button className="btn-primary" type="submit" style={{ padding: '0.9rem', width: '100%', fontWeight: 800 }}>
+                          {statusSubmitting ? 'PROCESANDO...' : 'EJECUTAR TRANSICIÓN'}
+                        </button>
+                      </form>
+                    )}
+                  </div>
                 )}
-              </div>
+              </div>}
             </div>
           )}
 
@@ -1415,7 +1832,7 @@ export default function CrmApplicationDetail() {
                             toast.success("APROBADO");
                             loadData();
                           }}>
-                            <CheckCircle2 size={12} />
+                            <CheckCircle size={12} />
                             APROBAR
                           </button>
                           <button className="btn-ghost" style={{ padding: '0.5rem 1rem', fontSize: '0.65rem', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '0.4rem', border: '1px solid #ef4444', color: '#991b1b', background: 'rgba(239, 68, 68, 0.05)' }} onClick={async () => {
@@ -1429,7 +1846,7 @@ export default function CrmApplicationDetail() {
                         </div>
                       ) : (
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.4rem 0.8rem', background: 'var(--bg-accent)', borderRadius: '8px' }}>
-                          {i.result === 'pass' ? <CheckCircle2 size={12} style={{ color: 'var(--success)' }} /> : <XCircle size={12} style={{ color: 'var(--danger)' }} />}
+                          {i.result === 'pass' ? <CheckCircle size={12} style={{ color: 'var(--success)' }} /> : <XCircle size={12} style={{ color: 'var(--danger)' }} />}
                           <span style={{ fontSize: '0.65rem', fontWeight: 900, letterSpacing: '0.05em' }}>{i.result.toUpperCase()}</span>
                         </div>
                       )}
@@ -1442,35 +1859,45 @@ export default function CrmApplicationDetail() {
 
           {activeTab === 'notes' && (
             <div className="reveal">
+              {/* ── Notas existentes ── */}
+              {notes.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '2.5rem', opacity: 0.4 }}>
+                  <FileText size={28} style={{ marginBottom: '0.8rem' }} />
+                  <p className="mono" style={{ fontSize: '0.7rem' }}>Sin observaciones registradas aún.</p>
+                </div>
+              ) : (
+                <div className="note-list" style={{ marginBottom: '2rem', display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
+                  {notes.map(n => (
+                    <div key={n.id} className="note-item" style={{ background: 'var(--bg-accent)', padding: '1.8rem', borderRadius: '20px', border: '1px solid var(--border-light)', position: 'relative' }}>
+                      <div style={{ fontSize: '0.9rem', lineHeight: '1.6', color: 'var(--text-main)' }} dangerouslySetInnerHTML={{ __html: n.note }} />
+                      <div style={{ marginTop: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border-light)', paddingTop: '1rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: 0.6 }}>
+                          <User size={12} />
+                          <small className="mono" style={{ fontSize: '0.6rem', fontWeight: 700 }}>RH: {n.profiles?.full_name}</small>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: 0.5 }}>
+                          <Clock size={12} />
+                          <small className="mono" style={{ fontSize: '0.6rem' }}>{new Date(n.created_at).toLocaleString()}</small>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* ── Formulario nueva observación ── */}
               <div className="card" style={{ padding: '2.5rem', borderRadius: '24px', border: '1px solid var(--border-light)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.8rem', marginBottom: '1.5rem' }}>
-                  <MessageSquare size={20} style={{ color: 'var(--accent)' }} />
-                  <h3 style={{ margin: 0 }}>BITÁCORA DE RECLUTADOR</h3>
+                  <Plus size={18} style={{ color: 'var(--accent)' }} />
+                  <h3 style={{ margin: 0 }}>NUEVA OBSERVACIÓN</h3>
                 </div>
                 <form onSubmit={handleAddNote} className="form-stack">
-                  <ReactQuill theme="snow" value={noteText} onChange={setNoteText} style={{ height: '240px', marginBottom: '4.5rem' }} />
+                  <ReactQuill theme="snow" value={noteText} onChange={setNoteText} style={{ height: '200px', marginBottom: '4.5rem' }} />
                   <button className="btn-primary" type="submit" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.6rem', padding: '1rem' }}>
                     <Plus size={16} />
                     GUARDAR OBSERVACIÓN
                   </button>
                 </form>
-              </div>
-              <div className="note-list" style={{ marginTop: '3rem', display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
-                {notes.map(n => (
-                  <div key={n.id} className="note-item" style={{ background: 'var(--bg-accent)', padding: '1.8rem', borderRadius: '20px', border: '1px solid var(--border-light)', position: 'relative' }}>
-                    <div style={{ fontSize: '0.9rem', lineHeight: '1.6', color: 'var(--text-main)' }} dangerouslySetInnerHTML={{ __html: n.note }} />
-                    <div style={{ marginTop: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border-light)', paddingTop: '1rem' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: 0.6 }}>
-                        <User size={12} />
-                        <small className="mono" style={{ fontSize: '0.6rem', fontWeight: 700 }}>RH: {n.profiles?.full_name}</small>
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: 0.5 }}>
-                        <Clock size={12} />
-                        <small className="mono" style={{ fontSize: '0.6rem' }}>{new Date(n.created_at).toLocaleString()}</small>
-                      </div>
-                    </div>
-                  </div>
-                ))}
               </div>
             </div>
           )}
@@ -1479,8 +1906,10 @@ export default function CrmApplicationDetail() {
             <div className="reveal">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2.5rem' }}>
                 <h3>REPOSITORIO DOCUMENTAL</h3>
-                {['new', 'validation', 'docs_validation'].includes(application?.status_key || '') && (
-                  <button className="btn-magnetic" onClick={validateFullExpediente} style={{ fontSize: '0.7rem', padding: '0.8rem 2rem' }}>VALIDAR TODO EL EXPEDIENTE</button>
+                {application?.status_key === 'documents_pending' && (
+                  <button className="btn-ghost" onClick={sendDocumentsReminder} disabled={sendingReminder} style={{ fontSize: '0.65rem', padding: '0.7rem 1.4rem', borderRadius: '12px', border: '1px solid var(--border-light)' }}>
+                    {sendingReminder ? 'ENVIANDO...' : '✉ SOLICITAR DOCUMENTOS'}
+                  </button>
                 )}
               </div>
 
@@ -1507,12 +1936,15 @@ export default function CrmApplicationDetail() {
                       <ExternalLink size={14} />
                     </div>
 
+
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.8rem', marginBottom: '1.5rem' }}>
                       <div style={{ padding: '0.8rem', background: 'var(--bg-accent)', borderRadius: '12px', color: 'var(--accent)' }}>
                         <FileText size={20} />
                       </div>
                       <div style={{ flex: 1 }}>
-                        <h4 style={{ fontSize: '0.85rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>{d.recruit_document_types?.name.toUpperCase()}</h4>
+                        <h4 style={{ fontSize: '0.85rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
+                          {(d.recruit_document_types as any)?.label?.toUpperCase() || (d.recruit_document_types as any)?.name?.toUpperCase() || 'DOCUMENTO'}
+                        </h4>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', marginTop: '0.2rem', opacity: 0.5 }}>
                           <Clock size={10} />
                           <small className="mono" style={{ fontSize: '0.55rem' }}>{new Date(d.uploaded_at).toLocaleDateString()}</small>
@@ -1521,56 +1953,141 @@ export default function CrmApplicationDetail() {
                     </div>
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                      {/* Badge: archivo re-subido por el candidato */}
+                      {d.validation_status === 'under_review' && d.validated_at && (
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', alignSelf: 'flex-start', background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.3)', borderRadius: '6px', padding: '3px 10px' }}>
+                          <RotateCcw size={10} style={{ color: '#8b5cf6' }} />
+                          <span className="mono" style={{ fontSize: '0.52rem', color: '#8b5cf6', fontWeight: 700 }}>ARCHIVO RESUBIDO</span>
+                        </div>
+                      )}
                       <div
                         style={{ display: 'flex', gap: '0.6rem', marginTop: '0.5rem' }}
                         onClick={(e) => e.stopPropagation()}
                       >
                         {/* SI ESTÁ BAJO REVISIÓN O PENDIENTE, MOSTRAR ACCIONES */}
                         {(d.validation_status === 'under_review' || d.validation_status === 'pending') && (
-                          <div style={{ display: 'flex', gap: '0.5rem', width: '100%' }}>
-                            <button
-                              className="btn-primary"
-                              onClick={() => updateDocStatus(d.id, 'validated')}
-                              style={{ flex: 1, padding: '0.6rem', fontSize: '0.65rem', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', pointerEvents: d.validation_status === 'under_review' ? 'auto' : 'none', opacity: d.validation_status === 'under_review' ? 1 : 0.5 }}
-                            >
-                              <CheckCircle2 size={14} />
-                              VALIDAR
-                            </button>
-                            <button
-                              className="btn-ghost"
-                              onClick={() => updateDocStatus(d.id, 'rejected')}
-                              style={{ flex: 1, padding: '0.6rem', fontSize: '0.65rem', borderRadius: '10px', border: '1px solid var(--danger)', color: 'var(--danger)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', pointerEvents: d.validation_status === 'under_review' ? 'auto' : 'none', opacity: d.validation_status === 'under_review' ? 1 : 0.5 }}
-                            >
-                              <XCircle size={14} />
-                              RECHAZAR
-                            </button>
+                          <div style={{ width: '100%' }}>
+                            {rejectingDocId !== d.id ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                  <button
+                                    className="btn-primary"
+                                    onClick={() => updateDocStatus(d.id, 'validated')}
+                                    disabled={!viewedDocs.has(d.id) || d.validation_status !== 'under_review'}
+                                    style={{ flex: 1, padding: '0.6rem', fontSize: '0.65rem', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', opacity: (!viewedDocs.has(d.id) || d.validation_status !== 'under_review') ? 0.4 : 1, cursor: (!viewedDocs.has(d.id) || d.validation_status !== 'under_review') ? 'not-allowed' : 'pointer' }}
+                                  >
+                                    <CheckCircle size={14} />
+                                    VALIDAR
+                                  </button>
+                                  <button
+                                    className="btn-ghost"
+                                    onClick={() => { setRejectingDocId(d.id); setRejectNote(""); }}
+                                    disabled={!viewedDocs.has(d.id) || d.validation_status !== 'under_review'}
+                                    style={{ flex: 1, padding: '0.6rem', fontSize: '0.65rem', borderRadius: '10px', border: '1px solid var(--danger)', color: 'var(--danger)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', opacity: (!viewedDocs.has(d.id) || d.validation_status !== 'under_review') ? 0.4 : 1, cursor: (!viewedDocs.has(d.id) || d.validation_status !== 'under_review') ? 'not-allowed' : 'pointer' }}
+                                  >
+                                    <XCircle size={14} />
+                                    RECHAZAR
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                                <input
+                                  className="input"
+                                  placeholder="Motivo del rechazo..."
+                                  value={rejectNote}
+                                  onChange={(e) => setRejectNote(e.target.value)}
+                                  style={{ fontSize: '0.7rem', padding: '0.5rem 0.75rem' }}
+                                  autoFocus
+                                />
+                                <div style={{ display: 'flex', gap: '0.4rem' }}>
+                                  <button
+                                    className="btn-primary"
+                                    onClick={() => handleReject(d.id, rejectNote)}
+                                    style={{ flex: 1, padding: '0.5rem', fontSize: '0.6rem', borderRadius: '8px', background: 'var(--danger)', border: 'none' }}
+                                  >
+                                    CONFIRMAR RECHAZO
+                                  </button>
+                                  <button
+                                    className="btn-ghost"
+                                    onClick={() => setRejectingDocId(null)}
+                                    style={{ padding: '0.5rem 0.75rem', fontSize: '0.6rem', borderRadius: '8px' }}
+                                  >
+                                    ✕
+                                  </button>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
 
                         {/* SI ESTÁ VALIDADO */}
                         {d.validation_status === 'validated' && (
                           <div style={{ width: '100%', padding: '0.6rem', background: 'rgba(34, 197, 94, 0.1)', color: '#166534', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', fontSize: '0.65rem', fontWeight: 800 }}>
-                            <CheckCircle2 size={14} />
+                            <CheckCircle size={14} />
                             DOCUMENTO VALIDADO
                           </div>
                         )}
 
                         {/* SI ESTÁ RECHAZADO */}
                         {d.validation_status === 'rejected' && (
-                          <div style={{ width: '100%', display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.5rem' }}>
-                            <div style={{ padding: '0.6rem', background: 'rgba(239, 68, 68, 0.1)', color: '#991b1b', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', fontSize: '0.65rem', fontWeight: 800 }}>
-                              <XCircle size={14} />
-                              RECHAZADO
+                          <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.5rem' }}>
+                              <div style={{ padding: '0.6rem', background: 'rgba(239, 68, 68, 0.1)', color: '#991b1b', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', fontSize: '0.65rem', fontWeight: 800 }}>
+                                <XCircle size={14} />
+                                RECHAZADO
+                              </div>
+                              <button className="btn-ghost" onClick={() => updateDocStatus(d.id, 'under_review')} style={{ padding: '0.6rem', borderRadius: '10px', border: '1px solid var(--border-light)' }} title="Reabrir para revisión">
+                                <RotateCcw size={14} />
+                              </button>
                             </div>
-                            <button className="btn-ghost" onClick={() => updateDocStatus(d.id, 'under_review')} style={{ padding: '0.6rem', borderRadius: '10px', border: '1px solid var(--border-light)' }}>
-                              <RotateCcw size={14} />
-                            </button>
+                            {d.validation_notes && (
+                              <p style={{ fontSize: '0.65rem', color: '#991b1b', margin: 0, padding: '0.4rem 0.6rem', background: 'rgba(239,68,68,0.05)', borderRadius: '6px', lineHeight: 1.4 }}>
+                                {d.validation_notes}
+                              </p>
+                            )}
                           </div>
                         )}
                       </div>
                     </div>
                   </div>
                 ))}
+
+                {/* --- 📝 FALTANTES: DOCUMENTOS NO SUBIDOS (Filtrado por etapa) --- */}
+                {documentTypes
+                  .filter(type => stageConfig.visibleStages?.includes(type.stage))
+                  .filter(type => !documents.some(d => d.recruit_document_types?.id === type.id))
+                  .map(missing => (
+                    <div
+                      key={missing.id}
+                      style={{
+                        padding: '2rem',
+                        border: '2px dashed var(--border-light)',
+                        borderRadius: '24px',
+                        background: 'rgba(255,255,255,0.01)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        gap: '1rem',
+                        opacity: 0.6,
+                        textAlign: 'center'
+                      }}
+                    >
+                      <div style={{ padding: '0.8rem', background: 'rgba(139, 92, 246, 0.05)', borderRadius: '12px', color: 'var(--text-dim)' }}>
+                        <AlertTriangle size={20} />
+                      </div>
+                      <div>
+                        <h4 style={{ fontSize: '0.75rem', fontWeight: 800, margin: 0, opacity: 0.8 }}>{missing.label?.toUpperCase() || missing.name.toUpperCase()}</h4>
+                        <small className="mono" style={{ fontSize: '0.5rem', color: missing.is_required ? 'var(--warning)' : 'var(--text-dim)' }}>
+                          {missing.is_required ? 'REQUISITO OBLIGATORIO' : 'OPCIONAL'}
+                        </small>
+                      </div>
+                      <div style={{ fontSize: '0.6rem', fontWeight: 700, padding: '0.3rem 0.8rem', background: 'rgba(0,0,0,0.1)', borderRadius: '6px', opacity: 0.4 }}>
+                        PENDIENTE DE CARGA
+                      </div>
+                    </div>
+                  ))}
               </div>
             </div>
           )}

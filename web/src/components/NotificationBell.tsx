@@ -14,6 +14,13 @@ interface Notification {
 
 function buildNotification(eventKey: string, metadata: Record<string, unknown>): Omit<Notification, "id" | "read" | "timestamp"> | null {
     switch (eventKey) {
+        case "new_application":
+            return {
+                type: "new_application",
+                title: "Nueva solicitud",
+                body: `${metadata.candidate_name ?? "Candidato"} aplicó para ${metadata.job_title ?? "una vacante"}`,
+                linkTo: metadata.application_id ? `/crm/applications/${metadata.application_id}` : "/crm",
+            };
         case "status_changed":
             return {
                 type: "status_changed",
@@ -21,16 +28,30 @@ function buildNotification(eventKey: string, metadata: Record<string, unknown>):
                 body: `De "${metadata.from_status_key ?? "—"}" → "${metadata.to_status_key ?? "—"}"`,
                 linkTo: metadata.application_id ? `/crm/applications/${metadata.application_id}` : undefined,
             };
+        case "doc_uploaded":
+            return {
+                type: "doc_uploaded",
+                title: "Documento recibido",
+                body: `${metadata.doc_type ?? "Documento"} subido por ${metadata.candidate_name ?? "candidato"}`,
+                linkTo: metadata.application_id ? `/crm/applications/${metadata.application_id}` : undefined,
+            };
+        case "interview_soon":
+            return {
+                type: "interview_soon",
+                title: "Entrevista próxima",
+                body: `En ${metadata.minutes_until ?? "?"} min con ${metadata.candidate_name ?? "candidato"}`,
+                linkTo: metadata.application_id ? `/crm/applications/${metadata.application_id}` : undefined,
+            };
         case "email_sent":
             return {
                 type: "new_application",
                 title: "Correo enviado",
-                body: `Se envió correo a ${metadata.to_address ?? "destinatario"}`,
+                body: `Correo enviado a ${metadata.to_address ?? "destinatario"}`,
             };
         case "email_failed":
             return {
                 type: "new_application",
-                title: "⚠ Correo fallido",
+                title: "Correo fallido",
                 body: `No se pudo enviar a ${metadata.to_address ?? "destinatario"}`,
             };
         default:
@@ -48,7 +69,37 @@ export default function NotificationBell() {
 
     const unreadCount = notifications.filter((n) => !n.read).length;
 
-    // Supabase Realtime subscription
+    // Carga inicial: últimos 20 eventos de la BD
+    useEffect(() => {
+        if (!profile) return;
+
+        supabase
+            .from("recruit_event_logs")
+            .select("id, event_key, metadata, application_id, created_at")
+            .eq("created_by", profile.id)
+            .order("created_at", { ascending: false })
+            .limit(20)
+            .then(({ data }) => {
+                if (!data) return;
+                const loaded: Notification[] = data
+                    .map((row) => {
+                        const meta = { ...(row.metadata ?? {}), application_id: row.application_id };
+                        const built = buildNotification(row.event_key, meta);
+                        if (!built) return null;
+                        return {
+                            id: `notif-${++notifIdCounter}`,
+                            read: true,
+                            timestamp: new Date(row.created_at),
+                            ...built,
+                        } as Notification;
+                    })
+                    .filter(Boolean) as Notification[];
+                setNotifications(loaded);
+            })
+            .catch(() => { /* notificaciones no disponibles, no es bloqueante */ });
+    }, [profile]);
+
+    // Supabase Realtime — nuevos eventos en vivo
     useEffect(() => {
         if (!profile) return;
 
@@ -104,9 +155,14 @@ export default function NotificationBell() {
         setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
     };
 
-    const clearAll = () => {
+    const clearAll = async () => {
         setNotifications([]);
         setOpen(false);
+        if (!profile) return;
+        await supabase
+            .from("recruit_event_logs")
+            .delete()
+            .eq("created_by", profile.id);
     };
 
     const timeAgo = (date: Date) => {
@@ -136,7 +192,7 @@ export default function NotificationBell() {
                     <path d="M13.73 21a2 2 0 0 1-3.46 0" />
                 </svg>
                 {unreadCount > 0 && (
-                    <span className="notif-badge">{unreadCount > 9 ? "9+" : unreadCount}</span>
+                    <span className="notif-badge">{unreadCount > 99 ? "99+" : unreadCount}</span>
                 )}
             </button>
 

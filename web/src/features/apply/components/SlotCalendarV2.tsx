@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import Calendar from 'react-calendar';
 import { format, isBefore, isWeekend, startOfDay, addDays } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -6,8 +6,8 @@ import { Calendar as CalendarIcon, Clock, CheckCircle2 } from 'lucide-react';
 import 'react-calendar/dist/Calendar.css';
 
 interface SlotCalendarV2Props {
-    slots: { [key: string]: string };
-    onChange: (slots: { [key: string]: string }) => void;
+    slots: { slot_1: string };
+    onChange: (slots: { slot_1: string }) => void;
     error?: string;
     occupiedSlots: string[];
 }
@@ -30,13 +30,13 @@ export default function SlotCalendarV2({ slots, onChange, error, occupiedSlots }
         const d = new Date(selectedDate);
         d.setHours(hour, 0, 0, 0);
         const isoSlot = format(d, "yyyy-MM-dd'T'HH:mm:ssxxx");
-        onChange({ slot_1: isoSlot, slot_2: '', slot_3: '' });
+        onChange({ slot_1: isoSlot });
     };
 
     return (
         <div className="availability-card pro-card" style={{ padding: '2rem', border: '1px solid var(--border-dim)', background: 'rgba(255,255,255,0.02)' }}>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 1fr) 1fr', gap: '3rem', alignItems: 'start' }}>
+            <div className="slot-calendar-grid">
                 {/* LEFT: Calendar */}
                 <div>
                     <h4 className="mono color-dim mb-4" style={{ fontSize: '0.8rem', letterSpacing: '0.1em' }}>

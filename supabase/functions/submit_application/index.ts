@@ -156,20 +156,20 @@ serve(async (req) => {
     const { data: recruiters } = await admin
       .from("profiles")
       .select("id")
-      .in("role", ["rh_admin", "rh_recruiter"]);
+      .eq("role", "rh_recruiter");
 
     if (recruiters && recruiters.length > 0) {
       const recruiterIds = recruiters.map(r => r.id);
 
       // 2. Count active/pending applications per recruiter
       // We consider "pending" those not in terminal states (hired, rejected, withdrawn)
-      const terminalStates = ["hired", "rejected", "withdrawn"];
+      const terminalStates = ["hired", "rejected_after_call", "interview_done_fail", "rejected"];
       const { data: appCounts } = await admin
         .from("recruit_applications")
         .select("assigned_to")
         .not("assigned_to", "is", null)
         .in("assigned_to", recruiterIds)
-        .not("status_key", "in", `(${terminalStates.map(s => `"${s}"`).join(",")})`);
+        .filter("status_key", "not.in", `(${terminalStates.join(",")})`);
 
       // 3. Initialize mapping and count
       const workload: Record<string, number> = {};
@@ -198,7 +198,17 @@ serve(async (req) => {
       assignedTo = candidatesList[Math.floor(Math.random() * candidatesList.length)];
     }
   } catch (assignError) {
-    console.warn("Auto-assignment failed, falling back to null:", assignError);
+    console.warn("Auto-assignment failed, falling back to random recruiter:", assignError);
+    // Fallback: Pick a recruiter at random if the complex logic fails
+    try {
+        const { data: fallbackRecruiters } = await admin
+          .from("profiles")
+          .select("id")
+          .eq("role", "rh_recruiter");
+        if (fallbackRecruiters && fallbackRecruiters.length > 0) {
+            assignedTo = fallbackRecruiters[Math.floor(Math.random() * fallbackRecruiters.length)].id;
+        }
+    } catch { /* Silent fail */ }
   }
 
   const suggestedSlots = (payload.suggested_slots ?? {}) as Record<string, string>;

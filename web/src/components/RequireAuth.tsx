@@ -1,8 +1,7 @@
-﻿import { Navigate, Outlet } from "react-router-dom";
+import { Navigate, Outlet } from "react-router-dom";
 import { useAuth } from "@/app/AuthProvider";
 import type { ProfileRole } from "@/lib/types";
 import { supabase } from "@/lib/supabaseClient";
-import LoadingScreen from "./LoadingScreen";
 
 interface RequireAuthProps {
   roles?: ProfileRole[];
@@ -12,7 +11,7 @@ export default function RequireAuth({ roles }: RequireAuthProps) {
   const { session, profile, loading, error } = useAuth();
 
   if (loading) {
-    return <LoadingScreen label="Verificando sesión" />;
+    return null;
   }
 
   if (error) {

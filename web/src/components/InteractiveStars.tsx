@@ -12,6 +12,11 @@ export default function InteractiveStars() {
 
         let particles: Particle[] = [];
         let mouse = { x: -1000, y: -1000, radius: 150 };
+        let rafId = 0;
+        let mousePending = false;
+        let scrolling = false;
+        let scrollTimer: ReturnType<typeof setTimeout>;
+        const isTouchDevice = 'ontouchstart' in window;
 
         // Determinar el color inicial según el tema
         const getParticleColor = () => {
@@ -77,24 +82,34 @@ export default function InteractiveStars() {
 
         const init = () => {
             particles = [];
-            const numberOfParticles = (window.innerWidth * window.innerHeight) / 2000;
+            // Reduced density: /4000 instead of /2000 — fewer particles, smoother scroll
+            const numberOfParticles = Math.min((window.innerWidth * window.innerHeight) / 4000, 400);
             for (let i = 0; i < numberOfParticles; i++) {
                 particles.push(new Particle());
             }
         };
 
         const animate = () => {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            for (let i = 0; i < particles.length; i++) {
-                particles[i].update();
-                particles[i].draw();
+            // En touch, no pausar durante scroll — las partículas responden al toque
+            if (!scrolling || isTouchDevice) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                for (let i = 0; i < particles.length; i++) {
+                    particles[i].update();
+                    particles[i].draw();
+                }
             }
-            requestAnimationFrame(animate);
+            rafId = requestAnimationFrame(animate);
         };
 
+        // Throttle mousemove via rAF flag — fires at most once per frame instead of every pixel
         const handleMouseMove = (e: MouseEvent) => {
-            mouse.x = e.x;
-            mouse.y = e.y;
+            if (mousePending) return;
+            mousePending = true;
+            requestAnimationFrame(() => {
+                mouse.x = e.x;
+                mouse.y = e.y;
+                mousePending = false;
+            });
         };
 
         const handleMouseLeave = () => {
@@ -106,19 +121,54 @@ export default function InteractiveStars() {
             colorBase = getParticleColor();
         };
 
+        const handleScroll = () => {
+            scrolling = true;
+            clearTimeout(scrollTimer);
+            scrollTimer = setTimeout(() => { scrolling = false; }, 200);
+        };
+
+        // Touch: actualizar posición del mouse desde el primer punto de contacto
+        const handleTouchMove = (e: TouchEvent) => {
+            if (mousePending) return;
+            mousePending = true;
+            const touch = e.touches[0];
+            requestAnimationFrame(() => {
+                mouse.x = touch.clientX;
+                mouse.y = touch.clientY;
+                mousePending = false;
+            });
+        };
+
+        const handleTouchEnd = () => {
+            // Desvanecer el efecto gradualmente moviendo el cursor lejos
+            mouse.x = -1000;
+            mouse.y = -1000;
+        };
+
         window.addEventListener('resize', resize);
         window.addEventListener('mousemove', handleMouseMove);
         window.addEventListener('mouseleave', handleMouseLeave);
         window.addEventListener('themechange', handleThemeChange as any);
+        // 'app-scroll' fired by PublicLayout; 'scroll' covers CRM and document-level scroll
+        window.addEventListener('app-scroll', handleScroll);
+        document.addEventListener('scroll', handleScroll, { passive: true, capture: true });
+        window.addEventListener('touchmove', handleTouchMove, { passive: true });
+        window.addEventListener('touchend', handleTouchEnd, { passive: true });
 
         resize();
         animate();
 
         return () => {
+            cancelAnimationFrame(rafId);
+            clearTimeout(scrollTimer);
             window.removeEventListener('resize', resize);
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseleave', handleMouseLeave);
             window.removeEventListener('themechange', handleThemeChange as any);
+            window.removeEventListener('app-scroll', handleScroll);
+            document.removeEventListener('scroll', handleScroll, { capture: true });
+            window.removeEventListener('touchmove', handleTouchMove);
+            window.removeEventListener('touchend', handleTouchEnd);
         };
     }, []);
 
@@ -133,7 +183,9 @@ export default function InteractiveStars() {
                 height: '100vh',
                 pointerEvents: 'none',
                 zIndex: 0,
-                background: 'transparent'
+                background: 'transparent',
+                willChange: 'transform',   // promotes to own GPU layer
+                contain: 'strict',         // limits layout/paint scope
             }}
         />
     );

@@ -94,64 +94,73 @@ serve(async (req) => {
         const meetLink = `https://meet.jit.si/entrevista-${shortId}`;
         console.log("✅ Jitsi Meet link generado:", meetLink);
 
-        // 5b. Intentar registrar evento en Google Calendar con el link de Jitsi
-        const googleServiceAccountKey = Deno.env.get("GOOGLE_SERVICE_ACCOUNT");
-        if (googleServiceAccountKey) {
-            try {
-                const credentials = JSON.parse(googleServiceAccountKey);
-                const { google } = await import("npm:googleapis@126.0.1");
-                const calAuth = new google.auth.GoogleAuth({
-                    credentials,
-                    scopes: ['https://www.googleapis.com/auth/calendar.events'],
-                });
-                const calendar = google.calendar({ version: 'v3', auth: calAuth });
-                const calendarId = Deno.env.get("GOOGLE_CALENDAR_ID") || 'primary';
+        const interviewerId = interviewer_id || user.id;
 
-                await calendar.events.insert({
-                    calendarId,
-                    resource: {
-                        summary: `Entrevista Virtual: ${candidateName} - ${jobTitle}`,
-                        description: `Enlace de videollamada: ${meetLink}\nCandidato: ${candidateName} (${candidateEmail || 'Sin correo'})`,
-                        location: meetLink,
-                        start: { dateTime: startTime.toISOString(), timeZone: 'America/Mexico_City' },
-                        end: { dateTime: endTime.toISOString(), timeZone: 'America/Mexico_City' },
-                    },
-                    sendUpdates: 'none',
-                });
-                console.log("✅ Evento registrado en Google Calendar");
-            } catch (calErr) {
-                // No bloqueamos si Calendar falla — el link de Jitsi sigue siendo válido
-                console.warn("⚠️ No se pudo crear evento en Calendar:", calErr.message);
-            }
+        // 5b. Verificar conflicto: el entrevistador ya tiene una reunión a la misma hora
+        const slotStart = new Date(scheduled_at);
+        const slotEnd   = new Date(slotStart.getTime() + 60 * 60 * 1000);
+
+        const { data: conflicts } = await supabaseAdmin
+            .from("recruit_interviews")
+            .select("id")
+            .eq("interviewer_id", interviewerId)
+            .eq("result", "pending")
+            .gte("scheduled_at", slotStart.toISOString())
+            .lt("scheduled_at",  slotEnd.toISOString());
+
+        if (conflicts && conflicts.length > 0) {
+            return new Response(JSON.stringify({ error: "El entrevistador ya tiene una reunión agendada en ese horario." }), {
+                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                status: 409,
+            });
         }
 
-        // 6. Save Interview Record
-        const { error: intError } = await supabaseAdmin.from("recruit_interviews").insert({
-            application_id: application_id,
-            interviewer_id: interviewer_id || user.id,
-            scheduled_at: scheduled_at,
-            interview_type: "virtual",
-            notes: "Entrevista virtual (Google Meet)",
-            result: "pending"
-        });
+        // 5c. Verificar duplicado: ya existe una entrevista pendiente para esta postulación
+        const { data: existing } = await supabaseAdmin
+            .from("recruit_interviews")
+            .select("id")
+            .eq("application_id", application_id)
+            .eq("result", "pending");
 
-        if (intError) {
-            console.error("❌ Error inserting interview:", intError);
-            throw intError;
+        if (existing && existing.length > 0) {
+            return new Response(JSON.stringify({ error: "Esta postulación ya tiene una reunión pendiente. Cancela la anterior antes de agendar una nueva." }), {
+                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                status: 409,
+            });
         }
 
-        // 7. Update Application status
+        // 6. Actualizar estatus de la postulación ANTES de insertar la entrevista
+        //    Si este paso falla, no se crea ningún registro huérfano
         const { error: appUpdateError } = await supabaseAdmin.from("recruit_applications")
             .update({
                 meet_link: meetLink,
-                status_key: 'interview_scheduled',
-                status_reason: `Entrevista vía Jitsi Meet agendada para: ${startTime.toLocaleString()}`
+                status_key: 'virtual_scheduled',
+                status_reason: `Reunión virtual vía Jitsi Meet agendada para: ${slotStart.toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })}`
             })
             .eq("id", application_id);
 
         if (appUpdateError) {
             console.error("❌ Error updating application:", appUpdateError);
             throw appUpdateError;
+        }
+
+        // 7. Insertar registro de entrevista (solo si el estatus se actualizó correctamente)
+        const { error: intError } = await supabaseAdmin.from("recruit_interviews").insert({
+            application_id: application_id,
+            interviewer_id: interviewerId,
+            scheduled_at: scheduled_at,
+            interview_type: "virtual",
+            notes: "Entrevista virtual",
+            result: "pending"
+        });
+
+        if (intError) {
+            console.error("❌ Error inserting interview:", intError);
+            // Revertir el estatus de la postulación
+            await supabaseAdmin.from("recruit_applications")
+                .update({ meet_link: null, status_key: 'validation', status_reason: null })
+                .eq("id", application_id);
+            throw intError;
         }
 
         return new Response(JSON.stringify({ success: true, meet_link: meetLink }), {
