@@ -73,30 +73,30 @@ export default function NotificationBell() {
     useEffect(() => {
         if (!profile) return;
 
-        supabase
-            .from("recruit_event_logs")
-            .select("id, event_key, metadata, application_id, created_at")
-            .eq("created_by", profile.id)
-            .order("created_at", { ascending: false })
-            .limit(20)
-            .then(({ data }) => {
-                if (!data) return;
-                const loaded: Notification[] = data
-                    .map((row) => {
-                        const meta = { ...(row.metadata ?? {}), application_id: row.application_id };
-                        const built = buildNotification(row.event_key, meta);
-                        if (!built) return null;
-                        return {
-                            id: `notif-${++notifIdCounter}`,
-                            read: true,
-                            timestamp: new Date(row.created_at),
-                            ...built,
-                        } as Notification;
-                    })
-                    .filter(Boolean) as Notification[];
-                setNotifications(loaded);
-            })
-            .catch(() => { /* notificaciones no disponibles, no es bloqueante */ });
+        void Promise.resolve(
+            supabase
+                .from("recruit_event_logs")
+                .select("id, event_key, metadata, application_id, created_at")
+                .eq("created_by", profile.id)
+                .order("created_at", { ascending: false })
+                .limit(20)
+        ).then(({ data }) => {
+            if (!data) return;
+            const loaded: Notification[] = data
+                .map((row) => {
+                    const meta = { ...(row.metadata ?? {}), application_id: row.application_id };
+                    const built = buildNotification(row.event_key, meta);
+                    if (!built) return null;
+                    return {
+                        id: `notif-${++notifIdCounter}`,
+                        read: true,
+                        timestamp: new Date(row.created_at),
+                        ...built,
+                    } as Notification;
+                })
+                .filter(Boolean) as Notification[];
+            setNotifications(loaded);
+        }).catch(() => { /* notificaciones no disponibles, no es bloqueante */ });
     }, [profile]);
 
     // Supabase Realtime — nuevos eventos en vivo
