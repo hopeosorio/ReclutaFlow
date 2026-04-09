@@ -104,7 +104,7 @@ export default function Step01Consent({
                 {hasScrolledToBottom ? (
                   <>AVISO LEÍDO INTEGRALMENTE</>
                 ) : (
-                  <>↓ DESPLÁZATE HASTA EL FINAL PARA HABILITAR LA FIRMA</>
+                  <>↓ LEE COMPLETAMENTE EL AVISO PARA HABILITAR LA FIRMA</>
                 )}
               </span>
             </div>

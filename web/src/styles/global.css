@@ -3065,6 +3065,10 @@ textarea.input {
     font-size: 16px !important;
   }
 
+  .outfit-black mb-2 {
+    font-size: 2.5rem;
+  }
+
   /* Nav */
   .nav-pixel {
     top: max(16px, calc(env(safe-area-inset-top) + 8px));
