@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { useForm, type SubmitHandler } from "react-hook-form";
+import { useForm } from "react-hook-form";
 import { Check, ChevronRight, ChevronLeft } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 

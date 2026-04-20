@@ -80,7 +80,7 @@ export default function SignaturePad({ value, onChange, disabled }: SignaturePad
 
   // Redraw when value changes
   useEffect(() => {
-    redraw(value);
+    redraw(value ?? null);
   }, [value]);
 
   useEffect(() => {
