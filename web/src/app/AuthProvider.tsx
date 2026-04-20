@@ -1,4 +1,4 @@
-﻿import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
 import type { Profile, ProfileRole } from "@/lib/types";
@@ -82,6 +82,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setProfile(null);
         return;
       }
+      
+      setLoading(true);
       setTimeout(() => {
         if (!active) return;
         fetchProfile(nextSession.user.id)
@@ -91,6 +93,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           .catch((err) => {
             const message = err instanceof Error ? err.message : "Error desconocido";
             if (active) setError(`No se pudo actualizar la sesión: ${message}`);
+          })
+          .finally(() => {
+            if (active) setLoading(false);
           });
       }, 0);
     });
