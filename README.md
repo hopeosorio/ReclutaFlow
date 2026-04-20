@@ -7,9 +7,9 @@ Sistema de gestión de reclutamiento y contratación (ATS) de nivel empresarial.
 ## Tecnologías
 
 - **Frontend**: React 19 + TypeScript + Vite (SPA)
-- **Backend**: Supabase (PostgreSQL + Edge Functions con Deno)
-- **Correo**: Edge Function `send_email` via SMTP o SendGrid
-- **Tiempo real**: Supabase Realtime
+- **Backend**: Supabase (PostgreSQL 17.6 + Edge Functions con Deno)
+- **Correo**: Edge Function `send_email` (SMTP, SendGrid o log_only — sin daemon externo)
+- **Tiempo real**: Supabase Realtime subscriptions
 - **UI**: Glassmorphism personalizado con Lucide React
 
 ---
@@ -19,8 +19,7 @@ Sistema de gestión de reclutamiento y contratación (ATS) de nivel empresarial.
 ```
 web/                        Frontend React (Vite)
 supabase/functions/         Edge Functions (Deno)
-database/                   Esquema SQL y seeds
-scripts/                    Utilidades de despliegue
+database/                   Esquema SQL de referencia
 ```
 
 ---
@@ -31,25 +30,34 @@ scripts/                    Utilidades de despliegue
 
 ```bash
 cd web
-npm run dev          # Servidor de desarrollo (localhost:5173)
-npm run build        # Build de producción
-npm run lint         # ESLint
-npm run test         # Pruebas con Vitest
+npm run dev          # Servidor de desarrollo con HMR (localhost:5173)
+npm run build        # Verificación de tipos + bundle de producción
+npm run lint         # ESLint 9
+npm run preview      # Vista previa del build local
+npm run test         # Pruebas una vez (Vitest)
 npm run test:watch   # Pruebas en modo observación
 ```
 
 ### Edge Functions
 
 ```bash
-supabase functions serve                  # Servir localmente
-bash scripts/deploy_functions.sh          # Desplegar a Supabase
+supabase functions serve   # Servir localmente
+
+# Desplegar a Supabase (PROJECT_REF=lwjyxfflpxptdmgupgmj)
+supabase functions deploy submit_application      --project-ref $PROJECT_REF --no-verify-jwt
+supabase functions deploy change_status           --project-ref $PROJECT_REF --no-verify-jwt
+supabase functions deploy send_email              --project-ref $PROJECT_REF --no-verify-jwt
+supabase functions deploy schedule_interview      --project-ref $PROJECT_REF --no-verify-jwt
+supabase functions deploy get_application_preview --project-ref $PROJECT_REF --no-verify-jwt
+supabase functions deploy get_crm_metrics         --project-ref $PROJECT_REF --no-verify-jwt
+supabase functions deploy remind_interviews       --project-ref $PROJECT_REF --no-verify-jwt
 ```
 
 ### Base de datos
 
 ```bash
-psql $DATABASE_URL -f database/schema_clean_v2.sql   # Aplicar esquema
-psql $DATABASE_URL -f database/seed_clean.sql         # Cargar datos semilla
+# Solo referencia — la BD viva en Supabase es la fuente de verdad
+# database/schema.sql
 ```
 
 ---
@@ -59,13 +67,13 @@ psql $DATABASE_URL -f database/seed_clean.sql         # Cargar datos semilla
 | Ruta | Acceso | Descripción |
 |---|---|---|
 | `/` | Público | Landing page |
-| `/apply` | Público | Formulario de postulación (4 pasos) |
+| `/apply` | Público | Formulario de postulación en 4 pasos |
 | `/track` | Público | Rastreador de estatus para candidatos |
 | `/login` | Público | Autenticación del personal de RH |
 | `/crm` | RH | Dashboard del pipeline |
 | `/crm/interviews` | RH | Calendario y lista de entrevistas |
 | `/crm/admin` | Admin | Configuración del sistema |
-| `/crm/applications/:id` | RH | Detalle del candidato |
+| `/crm/applications/:id` | RH | Vista detallada del candidato |
 
 ---
 
@@ -86,7 +94,7 @@ psql $DATABASE_URL -f database/seed_clean.sql         # Cargar datos semilla
 ```
 VITE_SUPABASE_URL=
 VITE_SUPABASE_ANON_KEY=
-VITE_FUNCTIONS_BASE_URL=
+VITE_FUNCTIONS_BASE_URL=   # Dejar vacío para auto-resolver
 VITE_STORAGE_BUCKET=recruit-docs
 ```
 
@@ -95,7 +103,7 @@ VITE_STORAGE_BUCKET=recruit-docs
 ```
 SUPABASE_URL=
 SUPABASE_SERVICE_ROLE_KEY=
-EMAIL_SEND_MODE=smtp
+EMAIL_SEND_MODE=smtp          # smtp | sendgrid | log_only
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=465
 SMTP_USER=
@@ -110,32 +118,38 @@ FRONTEND_URL=
 
 ## Pipeline de Candidatos
 
-```
-new -> validation -> virtual_scheduled -> virtual_done
-     -> documents_pending -> documents_complete
-     -> onboarding_scheduled -> hired
+10 estatus activos. Flujo de negocio intencionado:
 
-new -> validation -> interview_scheduled
-     -> interview_done_pass -> documents_pending -> hired
-     -> interview_done_fail -> rejected
+```
+new → validation → virtual_scheduled → virtual_done
+                                            ↓
+                                    documents_pending
+                                            ↓
+                                    documents_complete
+                                            ↓
+                               onboarding_scheduled / onboarding
+                                            ↓
+                                          hired
+
+Cualquier estatus → rejected
 ```
 
 ---
 
 ## Motor de Correo
 
-El envío de correos ocurre completamente dentro de Supabase sin procesos externos:
+Envío completamente dentro de Supabase, sin procesos externos:
 
 ```
-Trigger BD -> recruit_message_logs -> pg_net -> Edge Function send_email -> SMTP / SendGrid
+Trigger BD → recruit_message_logs → pg_net → Edge Function send_email → SMTP / SendGrid
 ```
 
-Modos disponibles via `EMAIL_SEND_MODE`: `smtp`, `sendgrid`, `log_only`.
+Modos disponibles vía `EMAIL_SEND_MODE`: `smtp`, `sendgrid`, `log_only`.
 
 ---
 
 ## Base de Datos
 
-La base de datos viva en Supabase (PostgreSQL 17.6, us-east-1) es la fuente de verdad. El archivo `database/schema_clean_v2.sql` es la referencia más cercana al esquema actual.
+La BD viva en Supabase (PostgreSQL 17.6, us-east-1) es la fuente de verdad. `database/schema.sql` es referencia extraída el 2026-04-20 — no ejecutar en producción sin revisar.
 
-Convención de prefijos: `recruit_*` para el módulo de reclutamiento, `core_*` para el módulo de empleados (Fase 2).
+Convención de prefijos: `recruit_*` = módulo de reclutamiento, `core_*` = módulo de empleados (Fase 2).

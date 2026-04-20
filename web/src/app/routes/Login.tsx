@@ -10,7 +10,6 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [isRh, setIsRh] = useState(true);
 
   const signInWithPasswordRest = async (emailValue: string, passwordValue: string) => {
     if (!supabaseUrl || !supabaseAnonKey) throw new Error("Configuración de Supabase no encontrada.");
@@ -39,12 +38,8 @@ export default function Login() {
     setError(null);
     setLoading(true);
     try {
-      if (isRh) {
-        await signInWithPasswordRest(email, password);
-        navigate("/crm");
-      } else {
-        setError("Acceso temporalmente restringido por mantenimiento.");
-      }
+      await signInWithPasswordRest(email, password);
+      navigate("/crm");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error desconocido");
     } finally {
@@ -72,53 +67,13 @@ export default function Login() {
           <h2 style={{ fontSize: '2rem', marginTop: '0.5rem' }}>ACCESO.</h2>
         </div>
 
-        <div style={{
-          display: 'flex',
-          gap: '1.5rem',
-          borderBottom: '1px solid var(--border-dim)',
-          marginBottom: '2rem'
-        }}>
-          <button
-            onClick={() => setIsRh(true)}
-            style={{
-              background: 'none',
-              color: isRh ? 'var(--text-main)' : 'var(--text-dim)',
-              border: 'none',
-              padding: '0.5rem 0',
-              borderBottom: isRh ? '2px solid var(--accent)' : 'none',
-              fontWeight: 800,
-              cursor: 'pointer',
-              textTransform: 'uppercase',
-              fontSize: '0.75rem'
-            }}
-          >
-            Socio RH
-          </button>
-          <button
-            onClick={() => setIsRh(false)}
-            style={{
-              background: 'none',
-              color: !isRh ? 'var(--text-main)' : 'var(--text-dim)',
-              border: 'none',
-              padding: '0.5rem 0',
-              borderBottom: !isRh ? '2px solid var(--accent)' : 'none',
-              fontWeight: 800,
-              cursor: 'pointer',
-              textTransform: 'uppercase',
-              fontSize: '0.75rem'
-            }}
-          >
-            Candidato
-          </button>
-        </div>
-
         <form onSubmit={handleSubmit} style={{ display: 'grid', gap: '1.5rem' }}>
           <div>
             <span className="mono" style={{ fontSize: '0.65rem', marginBottom: '0.4rem', display: 'block' }}>IDENTIFICADOR</span>
             <input
               className="glass-input"
               type="email"
-              placeholder={isRh ? "nombre@empresa.com" : "usuario@email.com"}
+              placeholder="nombre@empresa.com"
               style={{ padding: '0.8rem' }}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -127,30 +82,19 @@ export default function Login() {
             />
           </div>
 
-          {isRh ? (
-            <div>
-              <span className="mono" style={{ fontSize: '0.65rem', marginBottom: '0.4rem', display: 'block' }}>CONTRASEÑA</span>
-              <input
-                className="glass-input"
-                type="password"
-                placeholder="••••••••"
-                style={{ padding: '0.8rem' }}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                disabled={loading}
-              />
-            </div>
-          ) : (
-            <div>
-              <span className="mono" style={{ fontSize: '0.65rem', marginBottom: '0.4rem', display: 'block' }}>ID DE FOLIO</span>
-              <input
-                className="glass-input"
-                placeholder="ID DE SEGUIMIENTO (OPCIONAL)"
-                style={{ padding: '0.8rem' }}
-              />
-            </div>
-          )}
+          <div>
+            <span className="mono" style={{ fontSize: '0.65rem', marginBottom: '0.4rem', display: 'block' }}>CONTRASEÑA</span>
+            <input
+              className="glass-input"
+              type="password"
+              placeholder="••••••••"
+              style={{ padding: '0.8rem' }}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              disabled={loading}
+            />
+          </div>
 
           {(error || authError) && (
             <div style={{ color: 'var(--accent)', fontWeight: 700, fontSize: '0.7rem', textTransform: 'uppercase' }}>

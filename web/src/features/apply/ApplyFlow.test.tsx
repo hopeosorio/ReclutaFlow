@@ -15,8 +15,15 @@ vi.mock("@/lib/supabaseClient", async () => {
   };
 });
 
-vi.mock("jspdf", () => ({ default: vi.fn(() => ({ html: vi.fn(), save: vi.fn(), addPage: vi.fn() })) }));
-vi.mock("html2canvas", () => ({ default: vi.fn(async () => ({ toDataURL: vi.fn(() => "data:image/png;base64,mock") })) }));
+vi.mock("@react-pdf/renderer", () => ({
+  pdf: vi.fn(() => ({ toBlob: vi.fn(async () => new Blob(["mock"], { type: "application/pdf" })) })),
+  Document: ({ children }: any) => children,
+  Page: ({ children }: any) => children,
+  Text: ({ children }: any) => children,
+  View: ({ children }: any) => children,
+  Image: () => null,
+  StyleSheet: { create: (s: any) => s },
+}));
 
 const PRIVACY_NOTICE = {
   id: "pn-1",
@@ -62,7 +69,7 @@ describe("ApplyFlow", () => {
   it("muestra aviso de privacidad en el paso 1", async () => {
     render(<MemoryRouter><ApplyFlow /></MemoryRouter>);
     // El h2 del aviso de privacidad se renderiza exactamente como "AVISO DE PRIVACIDAD"
-    const heading = await screen.findByRole("heading", { name: /AVISO DE PRIVACIDAD/i }, { timeout: 3000 });
+    const heading = await screen.findByRole("heading", { name: /AVISO DE PRIVACIDAD/i, level: 2 }, { timeout: 3000 });
     expect(heading).toBeInTheDocument();
   });
 
@@ -71,7 +78,7 @@ describe("ApplyFlow", () => {
     render(<MemoryRouter><ApplyFlow /></MemoryRouter>);
 
     // Espera a que cargue: el heading del aviso aparece en step 0
-    await screen.findByRole("heading", { name: /AVISO DE PRIVACIDAD/i }, { timeout: 3000 });
+    await screen.findByRole("heading", { name: /AVISO DE PRIVACIDAD/i, level: 2 }, { timeout: 3000 });
 
     // Botón de avance en ApplyFlow dice "SIGUIENTE FASE"
     const nextButtons = screen.getAllByRole("button").filter(
@@ -80,7 +87,7 @@ describe("ApplyFlow", () => {
     if (nextButtons.length > 0) {
       await user.click(nextButtons[0]);
       // Sin firmar, no debería avanzar: el heading sigue visible
-      expect(screen.queryByRole("heading", { name: /AVISO DE PRIVACIDAD/i })).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: /AVISO DE PRIVACIDAD/i, level: 2 })).toBeInTheDocument();
     }
   });
 

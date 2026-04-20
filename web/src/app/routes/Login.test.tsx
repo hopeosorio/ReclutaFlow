@@ -46,14 +46,6 @@ describe("Login", () => {
     expect(screen.getByText(/ACCESO/i)).toBeInTheDocument();
   });
 
-  it("cambia a modo candidato al hacer click en el tab Candidato", async () => {
-    renderLogin();
-    const candidatoBtn = await screen.findByRole("button", { name: /Candidato/i });
-    fireEvent.click(candidatoBtn);
-    // En modo candidato, aparece el campo de ID de seguimiento
-    expect(screen.getByPlaceholderText(/ID DE SEGUIMIENTO/i)).toBeInTheDocument();
-  });
-
   it("envía credenciales y establece sesión en login exitoso", async () => {
     supabaseFetchMock.mockResolvedValue({
       ok: true,

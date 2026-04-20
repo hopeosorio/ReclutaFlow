@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { Check, ChevronRight, ChevronLeft } from "lucide-react";
@@ -13,8 +14,8 @@ import Step02Vacancy from "./components/Step02Vacancy";
 import Step03Identity from "./components/Step03Identity";
 import Step04Availability from "./components/Step04Availability";
 import { applyService } from "./services/applyService";
-import html2canvas from "html2canvas";
-import { jsPDF } from "jspdf";
+import { pdf } from "@react-pdf/renderer";
+import { ApplicationPDF } from "./components/ApplicationPDF";
 import "./ApplyFlow.css";
 
 export default function ApplyFlow() {
@@ -32,6 +33,21 @@ export default function ApplyFlow() {
   const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [occupiedSlots, setOccupiedSlots] = useState<string[]>([]);
+  const [showStep3Confirm, setShowStep3Confirm] = useState(false);
+
+  useEffect(() => {
+    if (showStep3Confirm) {
+      document.body.style.overflow = 'hidden';
+      document.body.style.touchAction = 'none';
+    } else {
+      document.body.style.overflow = '';
+      document.body.style.touchAction = '';
+    }
+    return () => {
+      document.body.style.overflow = '';
+      document.body.style.touchAction = '';
+    };
+  }, [showStep3Confirm]);
 
   const {
     register,
@@ -226,9 +242,12 @@ export default function ApplyFlow() {
     if (!ok) return;
 
     if (step === steps.length - 1) {
-      // LAST STEP: FINALIZAR
-      // Call onSubmit directly since validateStep already validated the current and previous steps organically
       onSubmit(getValues());
+      return;
+    }
+
+    if (step === 2) {
+      setShowStep3Confirm(true);
       return;
     }
 
@@ -450,29 +469,11 @@ export default function ApplyFlow() {
 
   const generateApplicationFile = async (values: ApplyFormValues): Promise<File> => {
     const poster = jobPostings.find(j => j.id === values.job_posting_id);
-    const html = jobTemplate(values, poster, selectedJobProfile, true);
-
-    // Create hidden rendering div
-    const container = document.createElement("div");
-    container.style.position = "absolute";
-    container.style.left = "-9999px";
-    container.innerHTML = html;
-    document.body.appendChild(container);
-
-    try {
-      const canvas = await html2canvas(container, { scale: 2, useCORS: true });
-      const imgData = canvas.toDataURL("image/jpeg", 0.95);
-      const pdf = new jsPDF("p", "pt", "a4");
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-      pdf.addImage(imgData, "JPEG", 0, 0, pdfWidth, pdfHeight);
-
-      const blob = pdf.output("blob");
-      const fileName = `solicitud_empleo_${values.signer_name.replace(/\s+/g, '_')}.pdf`;
-      return new File([blob], fileName, { type: "application/pdf" });
-    } finally {
-      document.body.removeChild(container);
-    }
+    const blob = await pdf(
+      <ApplicationPDF values={values} jobPosting={poster} jobProfile={selectedJobProfile} />
+    ).toBlob();
+    const fileName = `solicitud_empleo_${values.signer_name.replace(/\s+/g, '_')}.pdf`;
+    return new File([blob], fileName, { type: "application/pdf" });
   };
 
   // --- Document Generation (PDF/Print Preview) ---
@@ -490,6 +491,7 @@ export default function ApplyFlow() {
 
 
   return (
+    <>
     <section className={`apply-flow-section container-full`} style={{ paddingBottom: '6rem' }}>
       <div className="elite-bg-glow"></div>
 
@@ -575,5 +577,64 @@ export default function ApplyFlow() {
         </>
       )}
     </section>
+
+      {showStep3Confirm && createPortal(
+        <div style={{
+          position: 'fixed',
+          top: '-100px', left: 0, right: 0, bottom: '-100px',
+          zIndex: 1000,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: '1.5rem',
+          paddingTop: 'calc(1.5rem + 100px)',
+          paddingBottom: 'calc(1.5rem + 100px)',
+        }}>
+          {/* Capa blur */}
+          <div style={{ position: 'absolute', inset: 0, backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)' }} />
+          {/* Capa negra */}
+          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.7)' }} />
+          <div className="pro-card animate-fade" style={{ maxWidth: '480px', width: '100%', padding: '2.5rem', textAlign: 'center', position: 'relative', zIndex: 1 }}>
+            <span className="mono color-accent" style={{ fontSize: '0.55rem' }}>// CONFIRMACIÓN</span>
+            <p className="outfit-bold" style={{ fontSize: '1rem', margin: '1.2rem 0 1.5rem', lineHeight: 1.6 }}>
+              Hago constar que todas mis respuestas son verdaderas y autorizo la verificación de mis datos.
+            </p>
+            {signatureValue && (
+              <div style={{
+                border: '1px solid var(--border-dim)', borderRadius: '8px',
+                padding: '0.75rem', marginBottom: '1.8rem', background: 'rgba(255,255,255,0.03)',
+              }}>
+                <img src={signatureValue} alt="Tu firma" style={{ maxHeight: '80px', maxWidth: '100%', display: 'block', margin: '0 auto' }} />
+                <span className="mono color-dim" style={{ fontSize: '0.55rem', display: 'block', marginTop: '0.4rem' }}>{getValues("signer_name")}</span>
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
+              <button
+                type="button"
+                className="btn-ghost"
+                style={{ padding: '0.9rem 2.5rem', fontSize: '0.8rem' }}
+                onClick={() => setShowStep3Confirm(false)}
+              >
+                <span className="mono">NO</span>
+              </button>
+              <button
+                type="button"
+                className="btn-magnetic"
+                style={{ padding: '0.9rem 2.5rem', fontSize: '0.8rem' }}
+                onClick={() => {
+                  setShowStep3Confirm(false);
+                  setIsTransitioning(true);
+                  setTimeout(() => {
+                    setStep(s => s + 1);
+                    setIsTransitioning(false);
+                  }, 400);
+                }}
+              >
+                <span className="mono">SÍ</span>
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+    </>
   );
 }
