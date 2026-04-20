@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import Calendar from 'react-calendar';
 import { format, isBefore, isWeekend, startOfDay, addDays } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -16,9 +16,18 @@ export default function SlotCalendarV2({ slots, onChange, error, occupiedSlots }
     const [selectedDate, setSelectedDate] = useState<Date | null>(null);
 
     const availableHours = [9, 10, 11, 12, 13, 14, 15, 16];
-    const today = startOfDay(new Date());
-    const tomorrow = addDays(today, 1);
-    const maxAllowedDate = addDays(today, 11);
+    
+    // MEMOIZE DATES SO CALENDAR DOESN'T RE-RENDER AND COLLAPSE
+    const { tomorrow, maxAllowedDate } = useMemo(() => {
+        const today = startOfDay(new Date());
+        return {
+            tomorrow: addDays(today, 1),
+            maxAllowedDate: addDays(today, 11)
+        };
+    }, []);
+
+    const tileDisabled = useCallback(({ date }: { date: Date }) => isWeekend(date), []);
+
     const confirmedSlot = slots['slot_1'] || '';
 
     const handleDateChange = (value: any) => {
@@ -49,7 +58,7 @@ export default function SlotCalendarV2({ slots, onChange, error, occupiedSlots }
                             value={selectedDate}
                             minDate={tomorrow}
                             maxDate={maxAllowedDate}
-                            tileDisabled={({ date }) => isWeekend(date)}
+                            tileDisabled={tileDisabled}
                             className="elite-calendar"
                         />
                     </div>
@@ -118,7 +127,7 @@ export default function SlotCalendarV2({ slots, onChange, error, occupiedSlots }
                             {/* Slot confirmado - Debajo del grid, alineado a la derecha */}
                             {confirmedSlot && (
                                 <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '1.5rem' }}>
-                                    <div className="reveal" style={{
+                                    <div style={{
                                         display: 'flex', alignItems: 'center',
                                         background: 'rgba(61,90,254,0.1)', border: '1px solid var(--accent)',
                                         borderRadius: '12px', padding: '1rem 1.5rem', width: '300px'

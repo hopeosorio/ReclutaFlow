@@ -18,7 +18,7 @@ interface Step04AvailabilityProps {
 
 export default function Step04Availability({ slots, onChange, errors, occupiedSlots }: Step04AvailabilityProps) {
   return (
-    <div className="pro-card compact-card step-enter">
+    <div className="pro-card compact-card" style={{ minHeight: '820px' }}>
       <SectionTitle mono="AGENDAMIENTO" title="HORARIO DE ENTREVISTA" />
       <p className="mono color-dim mb-8" style={{ fontSize: '0.75rem' }}>
         SELECCIONA EL HORARIO PREFERIDO PARA TU ENTREVISTA VIRTUAL. EL SISTEMA ASIGNARÁ AUTOMÁTICAMENTE AL RECLUTADOR DISPONIBLE.

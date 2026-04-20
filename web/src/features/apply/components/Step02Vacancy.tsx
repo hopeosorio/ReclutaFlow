@@ -18,7 +18,7 @@ interface Step02VacancyProps {
 
 export default function Step02Vacancy({ register, setValue, selectedJobId, jobPostings, selectedJobProfile }: Step02VacancyProps) {
   return (
-    <div className="vacancy-flow-wrapper step-enter">
+    <div className="vacancy-flow-wrapper">
       <SectionTitle mono="DISPONIBLES" title="SELECCIONA TU VACANTE" />
 
       {!selectedJobId ? (
@@ -42,7 +42,7 @@ export default function Step02Vacancy({ register, setValue, selectedJobId, jobPo
           ))}
         </div>
       ) : (
-        <div className="selected-job-detail pro-card compact-card step-enter">
+        <div className="selected-job-detail pro-card compact-card">
           <div className="detail-header flex-between mb-8">
             <div>
               <span className="mono color-accent" style={{ fontSize: '0.6rem' }}>VACANTE SELECCIONADA</span>
@@ -58,44 +58,44 @@ export default function Step02Vacancy({ register, setValue, selectedJobId, jobPo
               <div className="detail-main">
                 {selectedJobProfile.role_summary && (
                   <div className="detail-section mb-6">
-                    <h4 className="mono color-dim mb-2">// RESUMEN DEL ROL</h4>
-                    <p style={{ fontSize: '0.9rem', lineHeight: '1.6', opacity: 0.8 }}>{selectedJobProfile.role_summary}</p>
+                    <h4 className="mono color-dim mb-2">// OBJETIVO</h4>
+                    <p style={{ fontSize: '0.9rem', lineHeight: '1.6', opacity: 0.8, whiteSpace: 'pre-line' }}>{selectedJobProfile.role_summary}</p>
                   </div>
                 )}
                 {selectedJobProfile.requirements && (
                   <div className="detail-section mb-6">
                     <h4 className="mono color-dim mb-2">// REQUISITOS</h4>
-                    <p style={{ fontSize: '0.9rem', lineHeight: '1.6', opacity: 0.8 }}>{selectedJobProfile.requirements}</p>
+                    <p style={{ fontSize: '0.9rem', lineHeight: '1.6', opacity: 0.8, whiteSpace: 'pre-line' }}>{selectedJobProfile.requirements}</p>
                   </div>
                 )}
                 {selectedJobProfile.min_education && (
                   <div className="detail-section mb-6">
                     <h4 className="mono color-dim mb-2">// ESCOLARIDAD MÍNIMA</h4>
-                    <p style={{ fontSize: '0.9rem', lineHeight: '1.6', opacity: 0.8 }}>{selectedJobProfile.min_education}</p>
+                    <p style={{ fontSize: '0.9rem', lineHeight: '1.6', opacity: 0.8, whiteSpace: 'pre-line' }}>{selectedJobProfile.min_education}</p>
                   </div>
                 )}
                 {selectedJobProfile.responsibilities && (
                   <div className="detail-section mb-6">
-                    <h4 className="mono color-dim mb-2">// RESPONSABILIDADES</h4>
-                    <p style={{ fontSize: '0.9rem', lineHeight: '1.6', opacity: 0.8 }}>{selectedJobProfile.responsibilities}</p>
+                    <h4 className="mono color-dim mb-2">// DEBE SABER O PODER HACER</h4>
+                    <p style={{ fontSize: '0.9rem', lineHeight: '1.6', opacity: 0.8, whiteSpace: 'pre-line' }}>{selectedJobProfile.responsibilities}</p>
                   </div>
                 )}
                 {selectedJobProfile.qualifications && (
                   <div className="detail-section mb-6">
                     <h4 className="mono color-dim mb-2">// COMPETENCIAS / CALIFICACIONES</h4>
-                    <p style={{ fontSize: '0.9rem', lineHeight: '1.6', opacity: 0.8 }}>{selectedJobProfile.qualifications}</p>
+                    <p style={{ fontSize: '0.9rem', lineHeight: '1.6', opacity: 0.8, whiteSpace: 'pre-line' }}>{selectedJobProfile.qualifications}</p>
                   </div>
                 )}
                 {selectedJobProfile.benefits && (
                   <div className="detail-section mb-6">
-                    <h4 className="mono color-dim mb-2">// BENEFICIOS</h4>
-                    <p style={{ fontSize: '0.9rem', lineHeight: '1.6', opacity: 0.8 }}>{selectedJobProfile.benefits}</p>
+                    <h4 className="mono color-dim mb-2">// NORMAS BÁSICAS</h4>
+                    <p style={{ fontSize: '0.9rem', lineHeight: '1.6', opacity: 0.8, whiteSpace: 'pre-line' }}>{selectedJobProfile.benefits}</p>
                   </div>
                 )}
                 {selectedJobProfile.growth_plan && (
                   <div className="detail-section mb-6">
                     <h4 className="mono color-dim mb-2">// PLAN DE CRECIMIENTO</h4>
-                    <p style={{ fontSize: '0.9rem', lineHeight: '1.6', opacity: 0.8 }}>{selectedJobProfile.growth_plan}</p>
+                    <p style={{ fontSize: '0.9rem', lineHeight: '1.6', opacity: 0.8, whiteSpace: 'pre-line' }}>{selectedJobProfile.growth_plan}</p>
                   </div>
                 )}
               </div>
@@ -103,40 +103,43 @@ export default function Step02Vacancy({ register, setValue, selectedJobId, jobPo
                 {selectedJobProfile.skills && (
                   <div className="detail-section mb-6">
                     <h4 className="mono color-dim mb-2">// HABILIDADES CLAVE</h4>
-                    <p style={{ fontSize: '0.85rem', lineHeight: '1.5', opacity: 0.8 }}>{selectedJobProfile.skills}</p>
+                    <p style={{ fontSize: '0.85rem', lineHeight: '1.5', opacity: 0.8, whiteSpace: 'pre-line' }}>{selectedJobProfile.skills}</p>
                   </div>
                 )}
                 {selectedJobProfile.experience && (
                   <div className="detail-section mb-6">
                     <h4 className="mono color-dim mb-2">// EXPERIENCIA DESEADA</h4>
-                    <p style={{ fontSize: '0.85rem', lineHeight: '1.5', opacity: 0.8 }}>{selectedJobProfile.experience}</p>
+                    <p style={{ fontSize: '0.85rem', lineHeight: '1.5', opacity: 0.8, whiteSpace: 'pre-line' }}>{selectedJobProfile.experience}</p>
                   </div>
                 )}
 
                 <div className="detail-section mb-6">
                   <h4 className="mono color-dim mb-4">// ESPECIFICACIONES CLAVE</h4>
-                  {selectedJobProfile.salary_range && (
+                  {selectedJobProfile.location_details && (
                     <div className="meta-info-card mb-4" style={{ padding: '1rem', background: 'rgba(255,255,255,0.03)', borderRadius: '12px', border: '1px solid var(--border-dim)' }}>
-                      <span className="mono color-dim block mb-1" style={{ fontSize: '0.55rem' }}>RANGO SALARIAL</span>
-                      <span className="outfit-bold color-accent" style={{ fontSize: '1.3rem' }}>{selectedJobProfile.salary_range}</span>
+                      <span className="mono color-dim block mb-1" style={{ fontSize: '0.55rem' }}>CENTRO DE TRABAJO</span>
+                      <span className="outfit-bold" style={{ fontSize: '1rem', opacity: 0.9, whiteSpace: 'pre-line' }}>{selectedJobProfile.location_details}</span>
                     </div>
                   )}
                   {selectedJobProfile.schedule && (
                     <div className="meta-info-card mb-4" style={{ padding: '1rem', background: 'rgba(255,255,255,0.03)', borderRadius: '12px', border: '1px solid var(--border-dim)' }}>
-                      <span className="mono color-dim block mb-1" style={{ fontSize: '0.55rem' }}>HORARIO</span>
-                      <span className="outfit-bold" style={{ fontSize: '1.1rem' }}>{selectedJobProfile.schedule}</span>
+                      <span className="mono color-dim block mb-1" style={{ fontSize: '0.55rem' }}>DISPONIBILIDAD</span>
+                      <span className="outfit-bold" style={{ fontSize: '1.1rem', whiteSpace: 'pre-line' }}>{selectedJobProfile.schedule}</span>
                     </div>
                   )}
-                  {selectedJobProfile.location_details && (
+
+                  {selectedJobProfile.salary_range && (
                     <div className="meta-info-card mb-4" style={{ padding: '1rem', background: 'rgba(255,255,255,0.03)', borderRadius: '12px', border: '1px solid var(--border-dim)' }}>
-                      <span className="mono color-dim block mb-1" style={{ fontSize: '0.55rem' }}>UBICACIÓN</span>
-                      <span className="outfit-bold" style={{ fontSize: '1rem', opacity: 0.9 }}>{selectedJobProfile.location_details}</span>
+                      <span className="mono color-dim block mb-1" style={{ fontSize: '0.55rem' }}>SALARIO</span>
+                      <span className="outfit-bold color-accent" style={{ fontSize: '1.3rem', whiteSpace: 'pre-line' }}>{selectedJobProfile.salary_range}</span>
                     </div>
                   )}
                 </div>
               </div>
             </div>
           )}
+
+
         </div>
       )}
     </div>

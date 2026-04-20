@@ -1674,7 +1674,7 @@ export default function CrmApplicationDetail() {
                     <div>
                       <span className="mono" style={{ fontSize: '0.6rem', color: 'var(--accent)', fontWeight: 800 }}>// ACCIÓN REQUERIDA</span>
                       <h3 style={{ fontSize: '1.5rem', marginTop: '0.2rem', marginBottom: '0.3rem' }}>CONFIRMAR HORARIO DE ENTREVISTA</h3>
-                      <p style={{ margin: 0, opacity: 0.6, fontSize: '0.75rem' }}>El candidato propuso los siguientes horarios. Selecciona uno para generar el Meet automáticamente.</p>
+                      <p style={{ margin: 0, opacity: 0.6, fontSize: '0.75rem' }}>El candidato propuso el siguiente horario. Confirmalo para generar el Meet automáticamente.</p>
                     </div>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>

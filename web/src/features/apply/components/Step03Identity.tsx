@@ -32,6 +32,9 @@ export default function Step03Identity({ register, watch, setValue, errors, ques
   const previousEmployee = appWatch.previous_employee;
   const adjustmentsRequired = appWatch.adjustments_required;
   const hasExperience = appWatch.has_experience;
+  
+  const todayStr = new Date().toISOString().split('T')[0];
+
   // Auto-foco cuando se activa un campo condicional
   useEffect(() => {
     if (hasExperience === "true") document.getElementById("years_exp_input")?.focus();
@@ -67,7 +70,7 @@ export default function Step03Identity({ register, watch, setValue, errors, ques
   }, [adjustmentsRequired, setValue]);
 
   return (
-    <div className="pro-card compact-card step-enter" style={{ maxWidth: '1250px', margin: '0 auto' }}>
+    <div className="pro-card compact-card" style={{ maxWidth: '1250px', margin: '0 auto' }}>
 
       {/* 1. DATOS PERSONALES */}
       <SectionTitle mono="CIUDADANO" title="DATOS PERSONALES" />
@@ -96,8 +99,8 @@ export default function Step03Identity({ register, watch, setValue, errors, ques
         </div>
         <div className="input-group">
           <label className="mono">FECHA DE NACIMIENTO: (DD/MM/AA) <span className="color-accent">*</span></label>
-          <input className="glass-input compact" type="date" {...register("person.birth_date", { required: true })} />
-          {errors.person?.birth_date && <span className="field-err">REQUERIDO</span>}
+          <input className="glass-input compact" type="date" max={todayStr} {...register("person.birth_date", { required: "REQUERIDO", max: { value: todayStr, message: "NO PUEDE SER FUTURA" } })} />
+          {errors.person?.birth_date && <span className="field-err">{(errors.person.birth_date.message as string) || "REQUERIDO"}</span>}
         </div>
       </div>
 
@@ -235,6 +238,7 @@ export default function Step03Identity({ register, watch, setValue, errors, ques
           <option value="both">AMBOS (SIN PREFERENCIA)</option>
           <option value="rotative">PUEDO ROLAR TURNOS</option>
         </select>
+        {errors.application_details?.schedule_preference && <span className="field-err">SELECCIÓN REQUERIDA</span>}
       </div>
 
       <div className="form-grid-2 mb-8">
@@ -464,8 +468,8 @@ export default function Step03Identity({ register, watch, setValue, errors, ques
 
       <div className="input-group mb-10">
         <label className="mono">FECHA EN QUE SE PUEDE PRESENTAR A TRABAJAR: <span className="color-accent">*</span></label>
-        <input className="glass-input compact" type="date" {...register("application_details.start_date", { required: true })} />
-        {errors.application_details?.start_date && <span className="field-err">FECHA REQUERIDA</span>}
+        <input className="glass-input compact" type="date" min={todayStr} {...register("application_details.start_date", { required: "FECHA REQUERIDA", min: { value: todayStr, message: "DEBE SER HOY O POSTERIOR" } })} />
+        {errors.application_details?.start_date && <span className="field-err">{(errors.application_details.start_date.message as string) || "FECHA REQUERIDA"}</span>}
       </div>
 
       <div className="input-group mb-12">
@@ -602,6 +606,11 @@ export default function Step03Identity({ register, watch, setValue, errors, ques
           max-width: 400px !important;
           width: 100% !important;
           cursor: pointer !important;
+        }
+
+        select.glass-input option {
+          background-color: var(--bg-pure, #111) !important;
+          color: var(--text-main, #fff) !important;
         }
 
         /* Eliminar el cuadro de enfoque (outline) azul del navegador */

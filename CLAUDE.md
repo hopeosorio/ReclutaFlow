@@ -41,11 +41,8 @@ pwsh scripts/get_jwt.ps1
 
 ### Base de datos
 ```bash
-# Aplicar el esquema completo desde cero (fuente autoritativa)
-psql $DATABASE_URL -f database/schema_clean_v2.sql
-
-# Cargar datos semilla (estatus, catálogo de documentos, transiciones, aviso de privacidad)
-psql $DATABASE_URL -f database/seed_clean.sql
+# Referencia del esquema (solo lectura — la BD viva en Supabase es la fuente de verdad)
+# database/schema.sql
 ```
 
 ---
@@ -158,35 +155,51 @@ Web Pública (React SPA)
 
 ## Backend — Supabase Edge Functions (`supabase/functions/`)
 
-Todas son manejadores Deno TypeScript independientes. Utilidades compartidas en `_shared/`.
+7 funciones activas en Supabase (verificado 2026-04-20). Todas con `verify_jwt: false` — cada función implementa su propia validación de acceso. Manejadores Deno TypeScript independientes. Utilidades compartidas en `_shared/`.
 
 ### Utilidades `_shared/`
 
 | Archivo | Exporta |
 |---|---|
 | `cors.ts` | `corsHeaders`, `jsonResponse()`, `errorResponse()` |
-| `supabase.ts` | `getAdminClient()` (service role), `getUserClient(req)` (con scope de usuario vía JWT) |
+| `supabase.ts` | `getAdminClient()` (service role key), `getUserClient(req)` (scope de usuario vía JWT del header Authorization) |
 | `validation.ts` | `requireFields()`, `isNonEmptyString()`, `asString()` |
 | `templating.ts` | `renderTemplate()` — reemplaza placeholders `{variable}` en strings |
 
 ### Edge Functions
 
 #### `submit_application` — Pública, sin autenticación
+> Última versión desplegada: 2026-04-20
 
-Crea la postulación completa de forma atómica.
+Crea la postulación completa de forma atómica usando service role (bypassa RLS).
 
-**Campos requeridos:** `job_posting_id`, `person.first_name`, `person.last_name`, `consent.accepted = true`
+**Payload requerido:**
+```json
+{
+  "job_posting_id": "uuid",
+  "person": { "first_name", "last_name", "email?", "phone?", "address_line1?", ... },
+  "consent": { "accepted": true, "privacy_notice_id?": "uuid" },
+  "candidate?": { "education_level?", "has_education_certificate?" },
+  "signature?": { "signer_name?", "signature_base64?", "signature_json?", "request_signed_upload?" },
+  "screening_answers?": [{ "question_id", "answer_text?", "answer_json?" }],
+  "documents?": [{ "document_type_id", "file_name?" }],
+  "suggested_slots?": { "slot_1?", "slot_2?", "slot_3?" },
+  "create_signed_upload_urls?": true
+}
+```
 
 **Flujo:**
-1. Valida que la vacante esté activa
-2. Inserta en `recruit_persons`
-3. Inserta en `recruit_candidates`
-4. **Auto-asigna reclutador** vía round-robin: cuenta postulaciones activas (no terminales) por reclutador, elige el de menor carga (desempate aleatorio)
-5. Inserta en `recruit_applications` con `status_key = 'new'`
-6. Registra `recruit_privacy_consents` (acepta `privacy_notice_id`)
-7. Guarda firma: si se provee `signature_base64` → sube directamente a Storage; si `create_signed_upload_urls = true` → devuelve URL firmada para subida
+1. Valida vacante activa
+2. Inserta `recruit_persons`
+3. Inserta `recruit_candidates`
+4. **Auto-asigna reclutador** — round-robin entre `rh_recruiter` (excluye `rh_admin`), menor carga de postulaciones no terminales, desempate aleatorio. Fallback: aleatorio. Si no hay reclutador disponible → `assigned_to = null`
+5. Inserta `recruit_applications` con `status_key = 'new'`
+6. Inserta `recruit_privacy_consents` — si no se provee `privacy_notice_id` usa el aviso activo más reciente
+7. Maneja firma:
+   - `signature_base64` → sube directo al bucket, inserta `recruit_digital_signatures`
+   - `request_signed_upload = true` → devuelve URL firmada para subida posterior
 8. Inserta `recruit_screening_answers`
-9. Crea registros en `recruit_application_documents` + devuelve URLs firmadas de subida por cada documento
+9. Inserta `recruit_application_documents` + genera URLs firmadas si `create_signed_upload_urls = true`
 
 **Respuesta:**
 ```json
@@ -201,78 +214,137 @@ Crea la postulación completa de forma atómica.
 }
 ```
 
+> Storage path para documentos: `applications/{application_id}/documents/{document_type_id}/{uuid}-{filename}`
+> Storage path para firmas: `applications/{application_id}/signatures/{uuid}.{ext}`
+
 ---
 
-#### `change_status` — Requiere autenticación
-
-Actualiza el estatus de la postulación a través del pipeline validado.
+#### `change_status` — Requiere JWT válido de RH
+> Última versión desplegada: 2026-04-04
 
 **Payload:** `{ application_id, status_key, reason?, note?, email_variables? }`
+También acepta `variables` como alias de `email_variables`.
 
 **Flujo:**
-1. Valida JWT del usuario
-2. Obtiene el `status_key` actual (para detectar la transición)
-3. Llama al RPC `recruit_change_status(p_application_id, p_status_key, p_reason, p_note)` — valida transición, obliga reason si se requiere, actualiza postulación, registra historial, opcionalmente inserta nota
-4. Inserta en `recruit_event_logs` con `event_key = 'status_changed'` y metadatos de la transición
-5. Consulta `recruit_status_transitions` por `template_key`
-6. Si existe plantilla → invoca la función `send_email`
+1. Valida JWT — rechaza si no hay usuario autenticado
+2. Captura `status_key` actual de la postulación (para detectar la transición)
+3. Llama RPC `recruit_change_status(p_application_id, p_status_key, p_reason, p_note)` — valida transición permitida, obliga `reason` si el estatus lo requiere, actualiza `recruit_applications`, inserta en `recruit_application_status_history`, inserta nota opcional en `recruit_notes`
+4. Inserta en `recruit_event_logs` con `event_key = 'status_changed'`, metadatos: `{from_status_key, to_status_key, reason, note}`
+5. Consulta `recruit_status_transitions.template_key` para la transición ocurrida
+6. Si hay `template_key` → invoca `send_email` vía `supabase.functions.invoke`
 
-**Respuesta:** `{ ok: true, email: { ok, error?, template_key } }`
+**Respuesta:** `{ ok: true, email: { ok, error?, template_key } | null }`
 
 ---
 
-#### `schedule_interview` — Requiere autenticación
+#### `schedule_interview` — Requiere JWT válido de RH
+> Última versión desplegada: 2026-04-07
 
-Agenda una entrevista y genera un enlace Jitsi Meet.
-
-**Payload:** `{ application_id, scheduled_at, interviewer_id }`
+**Payload:** `{ application_id, scheduled_at, interviewer_id? }`
+Si se omite `interviewer_id`, usa el usuario autenticado.
 
 **Flujo:**
-1. Valida JWT del usuario (extrae token del header `Authorization`)
-2. Obtiene la postulación con datos del candidato y vacante
-3. Genera enlace Jitsi Meet: `https://meet.jit.si/entrevista-{shortId}`
-4. Intenta integración con Google Calendar (vía paquete npm `googleapis` — solo si están configuradas las credenciales)
-5. Inserta en `recruit_interviews` con `interview_type = 'virtual'`
-6. Actualiza `recruit_applications.meet_link` y `status_key = 'interview_scheduled'`
-7. Inserta en `recruit_calendar_events`
+1. Valida JWT vía `Authorization` header
+2. Verifica conflicto: entrevistador ya tiene entrevista `pending` en el mismo slot (ventana de 1h)
+3. Verifica duplicado: postulación ya tiene entrevista `pending` activa → error 409
+4. Genera link Jitsi Meet: `https://meet.jit.si/entrevista-{primeros10charsDelAppIdSinGuiones}`
+5. Actualiza `recruit_applications`: `meet_link`, `status_key = 'virtual_scheduled'`, `status_reason`
+6. Inserta `recruit_interviews` con `interview_type = 'virtual'`, `result = 'pending'`
+7. Si falla el insert de entrevista → revierte `recruit_applications` a `status_key = 'validation'`
+
+> **Nota:** El `schedule_interview` NO inserta en `recruit_calendar_events` ni llama a Google Calendar en la versión actual desplegada.
 
 **Respuesta:** `{ success: true, meet_link: "https://meet.jit.si/..." }`
+**Error 409:** entrevistador ocupado o postulación ya tiene entrevista pendiente
 
 ---
 
-#### `send_email` — Requiere autenticación
+#### `send_email` — Pública / Sistema (valida internamente)
+> Última versión desplegada: 2026-04-09
 
-Renderiza una plantilla de correo y la encola para envío.
+Soporta dos modos de entrada: **llamada directa** (frontend/CRM) y **webhook** (AFTER INSERT en `recruit_message_logs`).
 
-**Payload:** `{ application_id, template_key?, template_id?, to_address?, variables? }`
+**Payload llamada directa:**
+```json
+{
+  "application_id": "uuid",
+  "template_key?": "string",
+  "template_id?": "uuid",
+  "to_address?": "string",
+  "to_recruiter?": true,
+  "variables?": { "key": "value" }
+}
+```
+
+**Payload webhook** (auto-detectado si tiene `type` + `record` + `table = 'recruit_message_logs'`):
+```json
+{ "type": "INSERT", "table": "recruit_message_logs", "record": { "id", "application_id", "template_id", "to_address", "status", "variables" } }
+```
 
 **Flujo:**
-1. Valida acceso a la postulación
-2. Carga la plantilla (por `template_key` o `template_id`)
-3. Usa `to_address` o hace fallback al correo del candidato
-4. Recopila contexto: título de vacante, sucursal, horario de entrevista, nombre del reclutador, meet_link
-5. Renderiza la plantilla vía `renderTemplate()` (reemplaza placeholders `{variable}`)
-6. Convierte Markdown → HTML
-7. Envía vía SMTP (Gmail configurado vía secrets de env)
-8. Actualiza `recruit_message_logs.status` a `'sent'` o `'failed'`
+1. Detecta modo (webhook vs directo). Si webhook y `record.status = 'sent'` → omite para prevenir loop
+2. Valida acceso: usuario autenticado con rol válido verifica `can_access_application`; llamadas de sistema omiten verificación
+3. Si `to_recruiter = true` → resuelve email del reclutador asignado vía `auth.admin.getUserById`
+4. Carga plantilla por `template_key` o `template_id`
+5. Resuelve variables de contexto desde BD:
+   - `recruit_job_postings` → `job_title`, `job_branch`
+   - `profiles` (reclutador asignado) → `recruiter_name`
+   - `recruit_interviews` (última) → `schedule_date`, `schedule_time`, `location`, `interviewer_name`
+   - `recruit_onboarding_plans` → `onboarding_date`, `onboarding_time`, `location`, `dress_code`, `host_name`, `notes_text`
+   - `recruit_applications.meet_link` → `meet_link` como `[UNIRSE AHORA](url)`
+6. Fusiona con variables del payload (el payload sobreescribe los valores resueltos)
+7. Renderiza asunto y cuerpo vía `renderTemplate()`
+8. Pre-procesa Markdown (`**bold**`, `*italic*`, `[text](url)`) → HTML antes de `marked.parse()`
+9. Envuelve en HTML "Sistema Elite de Talento"
+10. Envía según `EMAIL_SEND_MODE` (`smtp` | `sendgrid` | `log_only`)
+11. Webhook → UPDATE en `recruit_message_logs`; Directo → INSERT nuevo log
+12. Inserta `recruit_event_logs` con `event_key = 'email_sent'` o `'email_failed'`
+
+**Modos de envío (`EMAIL_SEND_MODE`):**
+| Valor | Comportamiento |
+|---|---|
+| `smtp` | SMTP con TLS via `SmtpClient`. Incluye patch de compatibilidad Deno 2.x |
+| `sendgrid` | REST API de SendGrid |
+| `log_only` | Marca `sent` sin enviar (desarrollo/pruebas) |
+
+**Respuesta éxito:** `{ ok: true, provider_message_id: "..." }`
+**Respuesta error:** HTTP 502 con `{ error: "...", details: "..." }`
 
 ---
 
-#### `get_application_preview` — Admin (service role)
+#### `get_application_preview` — Service role (sin verificación de JWT)
+> Última versión desplegada: 2026-04-03
 
-Devuelve variables de plantilla pre-renderizadas para un `application_id` dado.
+Devuelve variables de plantilla pre-renderizadas para previsualizar correos en CrmAdmin.
 
-**Variables devueltas:** `name`, `job_title`, `job_branch`, `schedule_date`, `schedule_time`, `location`, `recruiter_name`, `interviewer_name`, `contact_email`, `datetime`, `application_id`
+**Payload:** `{ application_id: "uuid" }`
 
-Usado por CrmAdmin para previsualizar plantillas de correo antes de enviar.
+**Variables devueltas:**
+```json
+{
+  "variables": {
+    "name", "job_title", "job_branch", "schedule_date", "schedule_time",
+    "location", "recruiter_name", "interviewer_name", "contact_email",
+    "datetime", "application_id"
+  }
+}
+```
 
 ---
 
-#### `get_crm_metrics` — Admin (service role)
+#### `get_crm_metrics` — Service role (sin verificación de JWT)
+> Última versión desplegada: 2026-04-03
 
 Devuelve KPIs del sistema para la pestaña Métricas de CrmAdmin.
 
-**Devuelve:**
+**Flujo:** Consultas en paralelo (`Promise.all`):
+- COUNT total de `recruit_applications`
+- COUNT de `recruit_message_logs` con `status = 'sent'`
+- COUNT de `recruit_message_logs` con `status = 'failed'`
+- RPC `get_status_counts` (fallback: agrupa `recruit_applications.status_key` en memoria)
+- Últimos 20 eventos de `recruit_event_logs` con joins a `profiles` y `recruit_message_templates`
+
+**Respuesta:**
 ```json
 {
   "summary": { "total_applications": 0, "emails_sent": 0, "emails_failed": 0, "status_breakdown": [] },
@@ -280,15 +352,18 @@ Devuelve KPIs del sistema para la pestaña Métricas de CrmAdmin.
 }
 ```
 
-Hace fallback a agregación en memoria si no existe el RPC `get_status_counts`.
-
 ---
 
-#### `remind_interviews` — Cron diario
+#### `remind_interviews` — Cron diario (sin verificación de JWT)
+> Última versión desplegada: 2026-04-03
 
-Consulta entrevistas con `result = 'pending'` programadas para mañana y registra eventos `remind_24h_sent` en `recruit_event_logs`. No se llama desde el frontend.
+Consulta entrevistas `result = 'pending'` programadas para mañana (00:00–23:59) y registra evento `remind_24h_sent` en `recruit_event_logs` por cada una. Idempotente: omite las que ya tienen el evento registrado.
 
-**Cron job activo en BD:** `remind_interviews_daily` — schedule `0 8 * * *` (diario 8am UTC), implementado con `pg_cron` + `pg_net`. Para administrarlo: **Dashboard de Supabase → Integrations → Cron Jobs**.
+> **Estado actual:** Solo registra el evento de log. El envío de correo de recordatorio aún no está implementado en el cuerpo de la función.
+
+**Cron activo en BD:** diario a las 8am UTC (`0 8 * * *`) vía `pg_cron`. Administrar en **Dashboard → Integrations → Cron Jobs**.
+
+**Respuesta:** `{ processed: N, sent: N, already_sent: N }`
 
 ---
 
@@ -333,456 +408,409 @@ Consulta entrevistas con `result = 'pending'` programadas para mañana y registr
 
 ### Variables disponibles en plantillas
 
-Todas se resuelven automáticamente; también se pueden sobreescribir en el payload:
+Se resuelven automáticamente desde la BD. El payload `variables` las sobreescribe.
 
-| Variable | Origen |
+| Variable | Resuelto desde |
 |---|---|
-| `{name}` / `{candidate_name}` | Nombre completo del candidato |
-| `{job_title}` | Título de la vacante |
-| `{job_branch}` | Sucursal de la vacante |
-| `{schedule_date}` / `{interview_date}` | Fecha de la entrevista (formato es-MX, zona México) |
-| `{schedule_time}` / `{interview_time}` | Hora de la entrevista |
-| `{datetime}` | Fecha + hora combinadas |
-| `{location}` | Ubicación (onboarding si aplica, si no entrevista) |
-| `{recruiter_name}` | Nombre del reclutador asignado |
-| `{interviewer_name}` | Nombre del entrevistador |
-| `{meet_link}` | Enlace Jitsi Meet como markdown `[UNIRSE AHORA](url)` |
-| `{onboarding_date}` | Fecha del onboarding |
-| `{onboarding_time}` | Hora del onboarding |
-| `{dress_code}` | Código de vestimenta del onboarding |
-| `{host_name}` | Anfitrión del onboarding (fallback: reclutador) |
-| `{coupon_code}` | Código de cupón (vacío por defecto) |
-| `{contact_phone}` / `{contact_email}` | Vacíos por defecto, sobreescribibles en payload |
+| `{name}` / `{candidate_name}` | `recruit_persons.first_name + last_name` |
+| `{job_title}` | `recruit_job_postings.title` |
+| `{job_branch}` | `recruit_job_postings.branch` |
+| `{schedule_date}` / `{interview_date}` | `recruit_interviews.scheduled_at` (es-MX, México TZ) |
+| `{schedule_time}` / `{interview_time}` | `recruit_interviews.scheduled_at` (hora) |
+| `{datetime}` | `schedule_date + schedule_time` combinados |
+| `{location}` | `recruit_onboarding_plans.location` si la plantilla usa onboarding, si no `recruit_interviews.location` |
+| `{recruiter_name}` | `profiles.full_name` del reclutador asignado |
+| `{interviewer_name}` | `profiles.full_name` del entrevistador (última entrevista) |
+| `{meet_link}` | `recruit_applications.meet_link` como `[UNIRSE AHORA](url)` |
+| `{onboarding_date}` / `{onboarding_time}` | `recruit_onboarding_plans.scheduled_at` |
+| `{dress_code}` | `recruit_onboarding_plans.dress_code` |
+| `{host_name}` | `recruit_onboarding_plans.host_name` (fallback: `recruiter_name`) |
+| `{notes_text}` | `recruit_onboarding_plans.notes` (fallback: `"Sin notas adicionales."`) |
 | `{application_id}` | UUID de la postulación |
-| `{track_url}` | URL de seguimiento `{FRONTEND_URL}/track?id={application_id}` |
+| `{track_url}` | `{FRONTEND_URL}/track?id={application_id}` |
+| `{coupon_code}` / `{contact_phone}` / `{contact_email}` | Vacíos por defecto, sobreescribibles |
 
 ---
 
 ## Esquema de Base de Datos
 
-> **La BD viva en Supabase (PostgreSQL 17.6, us-east-1) es la fuente de verdad**, no los archivos SQL del repo. `schema_clean_v2.sql` es la referencia más cercana, pero la BD ha evolucionado con migraciones manuales. Cuando haya discrepancia, la BD gana.
+> **La BD viva en Supabase (PostgreSQL 17.6, us-east-1) es la fuente de verdad.** El archivo `database/schema.sql` es la referencia extraída directamente de la BD el 2026-04-20. Cuando haya discrepancia, la BD gana.
 
 Convención de prefijos: `recruit_*` = módulo de reclutamiento, `core_*` = módulo de empleados (Fase 2).
 
-### Funciones de Ayuda (security definer)
+### Funciones de Autorización (security definer)
 
 | Función | Retorna | Descripción |
 |---|---|---|
 | `set_updated_at()` | trigger | Auto-asigna `updated_at = now()` en UPDATE |
-| `is_rh()` | boolean | El usuario tiene algún rol de RH |
-| `is_rh_admin()` | boolean | El usuario tiene rol `rh_admin` |
-| `is_rh_recruiter()` | boolean | El usuario tiene rol `rh_recruiter` |
-| `is_interviewer()` | boolean | El usuario tiene rol `interviewer` |
-| `is_interviewer_for_application(app_id)` | boolean | El usuario es entrevistador en esa postulación |
-| `can_access_application(app_id)` | boolean | admin O reclutador asignado O entrevistador en ella |
-| `can_access_candidate(candidate_id)` | boolean | Puede acceder a alguna postulación de ese candidato |
+| `is_rh()` | boolean | Usuario tiene algún rol de RH |
+| `is_rh_admin()` | boolean | Usuario tiene rol `rh_admin` |
+| `is_rh_recruiter()` | boolean | Usuario tiene rol `rh_recruiter` |
+| `is_interviewer()` | boolean | Usuario tiene rol `interviewer` |
+| `is_interviewer_for_application(app_id)` | boolean | Usuario es entrevistador en esa postulación |
+| `can_access_application(app_id)` | boolean | admin O reclutador asignado O entrevistador |
+| `can_access_candidate(candidate_id)` | boolean | Puede acceder a alguna postulación del candidato |
 | `can_access_person(person_id)` | boolean | Puede acceder a algún candidato de esa persona |
-| `recruit_change_status(p_application_id, p_status_key, p_reason, p_note)` | void | Cambio de estatus autorizado + inserción de nota opcional |
+| `recruit_change_status(p_application_id, p_status_key, p_reason, p_note)` | void | Cambio autorizado + nota opcional |
+| `get_user_email(p_user_id)` | text | Email de un usuario desde `auth.users` |
+| `application_id_from_path(p)` | uuid | Extrae application_id del path de Storage |
+| `get_occupied_slots()` | table | Slots ocupados para el calendario del candidato |
+| `get_best_recruiter_for_slots(p_slot1, p_slot2, p_slot3)` | uuid | Reclutador más disponible para los slots propuestos |
+| `get_available_recruiter_for_slot(p_slot)` | uuid | Alias de `get_best_recruiter_for_slots` para un slot |
 
 ### Tablas
 
-> Columnas verificadas directamente desde la BD viva en Supabase. El estado real puede diferir de `schema_clean_v2.sql` por migraciones aplicadas manualmente.
-
-#### Perfiles y Roles
-
-**`profiles`** — Personal de RH (vinculado 1:1 con `auth.users`)
+#### `profiles` — Personal de RH (2 rows)
 ```
-id uuid PK → auth.users
-role text CHECK ('rh_admin','rh_recruiter','interviewer')
+id uuid PK → auth.users (cascade delete)
+role text NOT NULL CHECK ('rh_admin','rh_recruiter','interviewer')
 full_name text
-created_at, updated_at timestamptz
+created_at, updated_at timestamptz NOT NULL DEFAULT now()
 ```
-Usuarios actuales en BD: 1× rh_admin, 2× rh_recruiter.
 
-#### Vacantes
+#### `core_employees` — Empleados contratados, Fase 2 (0 rows)
+```
+id uuid PK DEFAULT gen_random_uuid()
+first_name, last_name text
+phone_mobile, email_work, position, branch text
+hire_date date
+status text NOT NULL DEFAULT 'active' CHECK ('active','inactive')
+created_at, updated_at timestamptz NOT NULL
+```
 
-**`recruit_job_postings`** — Vacantes publicadas
+#### `recruit_job_postings` — Vacantes (1 row)
 ```
 id uuid PK
-title, branch, area, employment_type, description_short text
-status text CHECK ('active','paused','closed') DEFAULT 'active'
+title text NOT NULL
+branch, area, employment_type, description_short text
+status text NOT NULL DEFAULT 'active' CHECK ('active','paused','closed')
 created_by uuid → profiles
-created_at, updated_at timestamptz
+created_at, updated_at timestamptz NOT NULL
 ```
 RLS: SELECT público para `status = 'active'`; RH acceso completo.
 
-**`recruit_job_profiles`** — Detalle extendido de la vacante (1:1 con vacante)
+#### `recruit_job_profiles` — Detalle extendido de vacante (1:1)
 ```
 id uuid PK
-job_posting_id uuid → recruit_job_postings (UNIQUE, cascade delete)
+job_posting_id uuid NOT NULL UNIQUE → recruit_job_postings (cascade delete)
 requirements, min_education, skills, experience text
 role_summary, responsibilities, qualifications, benefits text
-schedule, salary_range, location_details, growth_plan text
-internal_notes text
-created_at, updated_at timestamptz
+schedule, salary_range, location_details, growth_plan, internal_notes text
+created_at, updated_at timestamptz NOT NULL
 ```
 
-#### Catálogo de Estatus
+#### `recruit_statuses` — Catálogo de etapas del pipeline (10 activos)
 
-**`recruit_statuses`** — Etapas del pipeline
+| status_key | label | sort_order | category |
+|---|---|---|---|
+| `new` | NUEVO POSTULANTE | 1 | pipeline |
+| `validation` | VALIDACIÓN INICIAL | 2 | pipeline |
+| `virtual_scheduled` | REUNIÓN VIRTUAL | 3 | interview |
+| `virtual_done` | ENTREVISTA APROBADA | 4 | pipeline |
+| `documents_pending` | SOLICITUD DE DOCUMENTOS | 5 | pipeline |
+| `documents_complete` | EXPEDIENTE COMPLETO | 6 | pipeline |
+| `onboarding` | EN PROCESO DE INGRESO | 7 | outcome |
+| `onboarding_scheduled` | ONBOARDING PROGRAMADO | 8 | pipeline |
+| `hired` | CONTRATADO | 9 | outcome |
+| `rejected` | CARTERA (RECHAZADO) | 10 | outcome |
+
 ```
 status_key text PK
-label text
-sort_order int
+label text NOT NULL
+sort_order int NOT NULL DEFAULT 0
 category text  -- 'pipeline' | 'interview' | 'outcome'
-requires_reason boolean DEFAULT false
-is_active boolean DEFAULT true
-created_at, updated_at timestamptz
+requires_reason boolean NOT NULL DEFAULT false
+is_active boolean NOT NULL DEFAULT true
+created_at, updated_at timestamptz NOT NULL
 ```
 
-**Estado real en BD (13 estatus, verificado vía API):**
-
-| status_key | label | sort_order | category | requires_reason |
-|---|---|---|---|---|
-| `new` | NUEVO POSTULANTE | 10 | pipeline | false |
-| `validation` | VALIDACIÓN INICIAL | 20 | pipeline | false |
-| `virtual_scheduled` | REUNIÓN VIRTUAL | 25 | **interview** | false |
-| `interview_scheduled` | ENTREVISTA AGENDADA | 30 | pipeline | false |
-| `virtual_done` | ENTREVISTA APROBADA | 31 | pipeline | false |
-| `onboarding` | EN PROCESO DE INGRESO | 40 | outcome | false |
-| `documents_pending` | SOLICITUD DE DOCUMENTOS | 40 | pipeline | false |
-| `documents_complete` | EXPEDIENTE COMPLETO | 50 | pipeline | false |
-| `onboarding_scheduled` | Onboarding programado | 60 | pipeline | false |
-| `interview_done_pass` | Entrevista aprobada | 60 | outcome | false |
-| `hired` | CONTRATADO | 70 | outcome | false |
-| `interview_done_fail` | DESCARTADO TRAS ENTREVISTA | 80 | outcome | **true** |
-| `rejected` | CARTERA (RECHAZADO) | 90 | outcome | false |
-
-> `seed_clean.sql` contiene 10 estatus con labels diferentes — la BD real ha evolucionado con migraciones manuales. La BD en vivo es la fuente de verdad.
-
-**`recruit_status_transitions`** — PK: `(from_status_key, to_status_key)`
+#### `recruit_status_transitions` — PK: `(from_status_key, to_status_key)`
 ```
-from_status_key text → recruit_statuses
-to_status_key text → recruit_statuses
-template_key text → recruit_message_templates (nullable, FK on delete set null)
-is_active boolean DEFAULT true
-created_at timestamptz
+from_status_key text NOT NULL → recruit_statuses
+to_status_key text NOT NULL → recruit_statuses
+template_key text → recruit_message_templates (on delete set null)
+is_active boolean NOT NULL DEFAULT true
+created_at timestamptz NOT NULL
 ```
+La matriz es permisiva (cubre prácticamente todas las combinaciones). El trigger `trg_recruit_applications_status_guard` valida cada transición antes de ejecutarla.
 
-**Estado real en BD:** 156 transiciones activas, todas con `template_key = null`. La matriz de transiciones es permisiva — prácticamente cualquier estatus puede transicionar a cualquier otro. Los triggers de BD (`recruit_enforce_status_change`) sí validan que la transición exista en esta tabla antes de permitirla.
-
-#### Personas y Candidatos
-
-**`recruit_persons`** — Datos personales del candidato
+#### `recruit_persons` — Datos personales (137 rows)
 ```
 id uuid PK
 first_name, last_name text NOT NULL
 phone, email text
 address_line1, address_line2, neighborhood, city, state, postal_code text
-created_at, updated_at timestamptz
+created_at, updated_at timestamptz NOT NULL
 ```
 
-**`recruit_candidates`** — Perfil del candidato (1:1 con persona)
+#### `recruit_candidates` — Perfil del candidato (64 rows, 1:1 con persona)
 ```
 id uuid PK
-person_id uuid UNIQUE → recruit_persons (cascade delete)
+person_id uuid NOT NULL UNIQUE → recruit_persons (cascade delete)
 education_level text
 has_education_certificate boolean
-created_at, updated_at timestamptz
+created_at, updated_at timestamptz NOT NULL
 ```
 
-**`recruit_applications`** — Postulaciones
+#### `recruit_applications` — Postulaciones (9 rows)
 ```
 id uuid PK
-job_posting_id uuid → recruit_job_postings
-candidate_id uuid → recruit_candidates
+job_posting_id uuid NOT NULL → recruit_job_postings
+candidate_id uuid NOT NULL → recruit_candidates
 UNIQUE (job_posting_id, candidate_id)
-status_key text → recruit_statuses
+status_key text NOT NULL → recruit_statuses
 status_reason text
 traffic_light text CHECK ('red','yellow','green')
 assigned_to uuid → profiles
-submitted_at, created_at, updated_at timestamptz
-suggested_slot_1 timestamptz   -- horario preferido 1
-suggested_slot_2 timestamptz   -- horario preferido 2 (columna confirmada en BD real)
-suggested_slot_3 timestamptz   -- horario preferido 3 (columna confirmada en BD real)
-meet_link text
+submitted_at, created_at, updated_at timestamptz NOT NULL
 hired_employee_id uuid → core_employees
+suggested_slot_1, suggested_slot_2, suggested_slot_3 timestamptz
+meet_link text
 ```
-Índices: `idx_recruit_applications_job`, `idx_recruit_applications_status`
 
 Triggers:
 - `trg_recruit_applications_updated_at` — auto updated_at
-- `trg_recruit_applications_status_log_insert` / `_update` — registra cambios de estatus en el historial
-- `trg_recruit_applications_status_guard` — valida transición permitida + reason requerida antes del cambio
-- `trg_recruit_applications_immutable` — no-admin no puede cambiar `job_posting_id`, `candidate_id`, `assigned_to`, `hired_employee_id`, `submitted_at`, `created_at`
+- `trg_recruit_applications_status_guard` — valida transición + reason requerida (BEFORE)
+- `trg_recruit_applications_status_log_insert/update` — registra en historial (AFTER)
+- `trg_recruit_applications_immutable` — protege campos clave para no-admin
+- `trigger_auto_assign_recruiter` — round-robin al insertar (BEFORE)
+- `trigger_notify_recruiter` — encola correo al reclutador asignado (AFTER)
 
-RLS: Admin ve todo; reclutador ve solo las asignadas; entrevistador ve las suyas.
-
-**`recruit_application_status_history`** — Historial de cambios de estatus
+#### `recruit_application_status_history` — Historial de cambios de estatus
 ```
 id uuid PK
-application_id uuid → recruit_applications (cascade delete)
-status_key text → recruit_statuses
+application_id uuid NOT NULL → recruit_applications (cascade delete)
+status_key text NOT NULL → recruit_statuses
 reason, notes text
 changed_by uuid → profiles
-changed_at timestamptz
+changed_at timestamptz NOT NULL DEFAULT now()
 ```
 
-**`recruit_notes`** — Notas internas por postulación
+#### `recruit_notes`
 ```
 id uuid PK
-application_id uuid → recruit_applications (cascade delete)
+application_id uuid NOT NULL → recruit_applications (cascade delete)
 note text NOT NULL
 created_by uuid → profiles
-created_at timestamptz
+created_at timestamptz NOT NULL
 ```
 
-#### Privacidad y Firmas
-
-**`recruit_privacy_notices`** — Avisos de privacidad con versionado
+#### `recruit_privacy_notices`
 ```
 id uuid PK
-version text UNIQUE
-content_md text
-is_active boolean DEFAULT true
-created_at timestamptz
+version text NOT NULL UNIQUE
+content_md text NOT NULL
+is_active boolean NOT NULL DEFAULT true
+created_at timestamptz NOT NULL
 ```
-RLS: SELECT público para `is_active = true`. BD actual: 1 aviso activo (`v1`).
+BD actual: 1 aviso activo (`v1`).
 
-**`recruit_privacy_consents`** — Consentimientos GDPR
+#### `recruit_privacy_consents`
 ```
 id uuid PK
-application_id uuid → recruit_applications (cascade delete)
-privacy_notice_id uuid → recruit_privacy_notices
-accepted boolean
-accepted_at timestamptz
+application_id uuid NOT NULL → recruit_applications (cascade delete)
+privacy_notice_id uuid NOT NULL → recruit_privacy_notices
+accepted boolean NOT NULL
+accepted_at timestamptz NOT NULL DEFAULT now()
 user_agent text
 ip_address inet
 ```
 
-**`recruit_digital_signatures`** — Firmas digitales
+#### `recruit_digital_signatures`
 ```
 id uuid PK
-application_id uuid → recruit_applications (cascade delete)
-signer_name text
-signature_storage_path text  -- ruta en el bucket recruit-docs
-signature_json jsonb          -- datos crudos de la firma (alternativo)
-signed_at timestamptz
+application_id uuid NOT NULL → recruit_applications (cascade delete)
+signer_name text NOT NULL
+signature_storage_path text  -- ruta en bucket recruit-docs
+signature_json jsonb
+signed_at timestamptz NOT NULL DEFAULT now()
 ```
 
-#### Screening
-
-**`recruit_screening_questions`** — Preguntas de filtro por vacante
+#### `recruit_screening_questions`
 ```
 id uuid PK
-job_posting_id uuid → recruit_job_postings (cascade delete)
-question_text text
-question_type text CHECK ('text','boolean','single_choice','multi_choice','number')
-options jsonb  -- arreglo de opciones para tipos choice
-is_required boolean
-created_at timestamptz
+job_posting_id uuid NOT NULL → recruit_job_postings (cascade delete)
+question_text text NOT NULL
+question_type text NOT NULL CHECK ('text','boolean','single_choice','multi_choice','number')
+options jsonb
+is_required boolean NOT NULL DEFAULT false
+created_at timestamptz NOT NULL
 ```
-RLS: Lectura pública si la vacante está activa; escritura solo admin.
 
-**`recruit_screening_answers`** — Respuestas de candidatos
+#### `recruit_screening_answers`
 ```
 id uuid PK
-application_id uuid → recruit_applications (cascade delete)
-question_id uuid → recruit_screening_questions (cascade delete)
+application_id uuid NOT NULL → recruit_applications (cascade delete)
+question_id uuid NOT NULL → recruit_screening_questions (cascade delete)
 UNIQUE (application_id, question_id)
 answer_text text
 answer_json jsonb
-created_at timestamptz
+created_at timestamptz NOT NULL
 ```
 
-#### Entrevistas
-
-**`recruit_interviews`** — Entrevistas agendadas
+#### `recruit_interviews` — (1 row)
 ```
 id uuid PK
-application_id uuid → recruit_applications (cascade delete)
-interview_type text CHECK ('phone','in_person','virtual')
+application_id uuid NOT NULL → recruit_applications (cascade delete)
+interview_type text NOT NULL CHECK ('phone','in_person','virtual')
 scheduled_at timestamptz
 location text
 interviewer_id uuid → profiles
-result text CHECK ('pending','pass','fail','no_show','reschedule') DEFAULT 'pending'
+result text NOT NULL DEFAULT 'pending' CHECK ('pending','pass','fail','no_show','reschedule')
 notes text
-created_at, updated_at timestamptz
+created_at, updated_at timestamptz NOT NULL
 ```
 
-Triggers: inmutabilidad (no-admin no puede cambiar `application_id`, `interview_type`, `created_at`; entrevistador no puede cambiar `scheduled_at`, `location`, `interviewer_id`).
-
-RLS: Admin ve todo; reclutador ve entrevistas de postulaciones asignadas; entrevistador ve solo las suyas.
-
-**`recruit_calendar_events`** — Eventos de calendario vinculados a entrevistas
+#### `recruit_calendar_events`
 ```
 id uuid PK
-interview_id uuid → recruit_interviews (cascade delete)
-provider text CHECK ('google_calendar','email_only') DEFAULT 'email_only'
+interview_id uuid NOT NULL → recruit_interviews (cascade delete)
+provider text NOT NULL DEFAULT 'email_only' CHECK ('google_calendar','email_only')
 event_id, event_link text
-created_at timestamptz
+created_at timestamptz NOT NULL
 ```
 
-#### Documentos
+#### `recruit_document_types` — Catálogo de documentos
 
-**`recruit_document_types`** — Catálogo de tipos de documento
-```
-id uuid PK
-name text UNIQUE
-label text
-stage text CHECK ('application','post_interview','onboarding')
-is_required boolean DEFAULT false
-is_active boolean DEFAULT true
-created_at timestamptz
-```
-RLS: Lectura pública solo para `stage = 'application'`; lectura completa para RH; escritura solo admin.
-
-**Documentos activos en BD (verificado vía API):**
+**Activos:**
 
 | name | label | stage | is_required |
 |---|---|---|---|
-| `solicitud_empleo` | SOLICITUD DE EMPLEO | application | **true** |
+| `solicitud_empleo` | SOLICITUD DE EMPLEO | application | true |
 | `acta_nacimiento` | Acta de Nacimiento (Mayor de 18 años) | onboarding | true |
-| `curp` | CURP (Fecha de impresión reciente) | onboarding | true |
-| `rfc` | RFC (En caso de contar con él) | onboarding | false |
-| `ine` | INE (Identificación Oficial) | onboarding | true |
+| `cartas_recomendacion` | 2 Cartas de Recomendación | onboarding | true |
 | `comprobante_domicilio` | Comprobante de domicilio | onboarding | true |
 | `constancia_estudios` | Constancia de estudios | onboarding | true |
-| `cartas_recomendacion` | 2 Cartas de Recomendación | onboarding | true |
+| `curp` | CURP (Fecha de impresión reciente) | onboarding | true |
 | `examen_medico` | Examen médico | onboarding | true |
+| `ine` | INE (Identificación Oficial) | onboarding | true |
+| `rfc` | RFC (En caso de contar con él) | onboarding | false |
 | `tipo_sangre` | Comprobante de Tipo de Sangre | onboarding | true |
 
-> `seed_clean.sql` referenciaba `cv_solicitud` — en la BD real es `solicitud_empleo`. Existen 8 tipos inactivos adicionales: `cv`, `nss`, `alta_imss`, `clabe_interbancaria`, `contrato_firmado`, `comprobante_estudios`, `identificacion_oficial`, `comprobante_estudios_onboarding`.
-
-**`recruit_application_documents`** — Documentos subidos por el candidato
 ```
 id uuid PK
-application_id uuid → recruit_applications (cascade delete)
-document_type_id uuid → recruit_document_types
-storage_path text NOT NULL  -- ruta en el bucket recruit-docs
-validation_status text CHECK ('pending','under_review','validated','rejected') DEFAULT 'pending'
+name text NOT NULL UNIQUE
+label text
+stage text NOT NULL CHECK ('application','post_interview','onboarding')
+is_required boolean NOT NULL DEFAULT false
+is_active boolean NOT NULL DEFAULT true
+created_at timestamptz NOT NULL
+```
+
+#### `recruit_application_documents`
+```
+id uuid PK
+application_id uuid NOT NULL → recruit_applications (cascade delete)
+document_type_id uuid NOT NULL → recruit_document_types
+storage_path text NOT NULL
+validation_status text NOT NULL DEFAULT 'pending' CHECK ('pending','under_review','validated','rejected')
 validation_notes text
-uploaded_at timestamptz
+uploaded_at timestamptz NOT NULL DEFAULT now()
 validated_at timestamptz
 ```
-Trigger: inmutabilidad en `application_id`, `document_type_id`, `storage_path`, `uploaded_at` para no-admin.
 
-#### Mensajería
+#### `recruit_message_templates` — Plantillas de correo (12 activas)
 
-**`recruit_message_templates`** — Plantillas de correo electrónico
-```
-id uuid PK
-template_key text UNIQUE
-subject text
-body_md text  -- Cuerpo en Markdown con placeholders {variable}
-is_active boolean DEFAULT true
-created_at timestamptz
-```
-RLS: Lectura para RH; escritura solo admin.
-
-**Plantillas activas en BD (11, verificado vía API):**
-
-| template_key | Asunto |
+| template_key | Propósito |
 |---|---|
-| `documents_request` | Acción requerida: Carga de Documentación de Ingreso |
-| `fail_after_interview_with_coupon` | Gracias por asistir |
-| `interview_invitation` | ¡Felicidades! Invitación a Entrevista |
-| `interview_passed_docs` | ¡Felicidades! Próximos pasos para tu contratación |
-| `new_assignment_recruiter` | Nueva postulación asignada |
-| `onboarding_details` | ¡Bienvenido al Equipo! - Siguientes Pasos para {job_title} |
-| `reject_after_call` | Actualización sobre tu postulación para {job_title} |
-| `rejected` | Actualización de tu proceso - ReclutaFlow |
-| `schedule_interview` | Citación: Entrevista Virtual para {job_title} |
-| `welcome_candidate` | Confirmamos tu postulación para {job_title} |
-| `welcome_onboarding` | ¡Bienvenido al Equipo! Inicio de Onboarding |
+| `welcome_candidate` | Confirmación de postulación al candidato |
+| `schedule_interview` | Citación a reunión virtual |
+| `virtual_reschedule_candidate` | Notifica reagendado al candidato |
+| `virtual_reschedule_recruiter` | Notifica reagendado al reclutador |
+| `documents_request` | Solicitud de documentos de ingreso |
+| `document_rejected` | Notifica documento rechazado al candidato |
+| `all_docs_uploaded` | Notifica al reclutador que el expediente está completo |
+| `onboarding_details` | Detalles de onboarding al candidato |
+| `onboarding_host_notification` | Notifica al anfitrión de onboarding |
+| `welcome_onboarding` | Bienvenida al equipo al contratar |
+| `rejected` | Notificación de rechazo al candidato |
+| `new_assignment_recruiter` | Nueva postulación asignada al reclutador |
 
-**`recruit_message_logs`** — Cola de correos electrónicos
 ```
 id uuid PK
-application_id uuid → recruit_applications (cascade delete)
-template_id uuid → recruit_message_templates
-channel text CHECK ('email','calendar','other') DEFAULT 'email'
-to_address text
-status text CHECK ('queued','sent','failed') DEFAULT 'queued'
-provider_message_id text
-error text
-sent_at timestamptz
-created_at timestamptz
+template_key text NOT NULL UNIQUE
+subject text NOT NULL
+body_md text NOT NULL  -- Markdown con placeholders {variable}
+is_active boolean NOT NULL DEFAULT true
+created_at timestamptz NOT NULL
 ```
-**Webhook `process_new_email_log`** (AFTER INSERT): configurado como **Supabase Database Webhook** (administrable en Dashboard → Integrations → Webhooks). Bajo el hood se implementa como un trigger PostgreSQL que llama a `supabase_functions.http_request()` → `pg_net` → edge function `send_email`. **El envío es 100% asíncrono dentro de Supabase — no existe ningún proceso externo.**
 
-**`recruit_template_variables`** — Catálogo de variables disponibles para plantillas
+#### `recruit_message_logs` — Cola de correos
+```
+id uuid PK
+application_id uuid NOT NULL → recruit_applications (cascade delete)
+template_id uuid → recruit_message_templates
+channel text NOT NULL DEFAULT 'email' CHECK ('email','calendar','other')
+to_address text
+status text NOT NULL DEFAULT 'queued' CHECK ('queued','sent','failed')
+provider_message_id, error text
+sent_at timestamptz
+created_at timestamptz NOT NULL
+```
+**Webhook `process_new_email_log`** (AFTER INSERT en `recruit_message_logs`): trigger PostgreSQL → `pg_net` → edge function `send_email`. Envío 100% asíncrono dentro de Supabase.
+
+#### `recruit_template_variables` — Variables disponibles para plantillas (24 activas)
+
+Variables clave: `name`, `candidate_name`, `job_title`, `job_branch`, `schedule_date`, `schedule_time`, `interview_date`, `interview_time`, `meet_link`, `location`, `recruiter_name`, `interviewer_name`, `onboarding_date`, `onboarding_time`, `dress_code`, `host_name`, `notes_text`, `coupon_code`, `contact_phone`, `contact_email`, `application_id`, `track_url`, `crm_url`, `doc_name`, `rejection_reason`
+
 ```
 variable_key text PK
 label, description, example_value text
-is_active boolean DEFAULT true
-sort_order int
-created_at timestamptz
+is_active boolean NOT NULL DEFAULT true
+sort_order int NOT NULL DEFAULT 0
+created_at timestamptz NOT NULL
 ```
 
-**Variables reales en BD (14, verificado vía API):**
-`name`, `job_title`, `job_branch`, `schedule_date`, `schedule_time`, `location`, `recruiter_name`, `interviewer_name`, `coupon_code`, `onboarding_date`, `onboarding_time`, `dress_code`, `contact_phone`, `contact_email`
-
-**`recruit_event_logs`** — Auditoría completa de eventos del sistema
+#### `recruit_event_logs` — Auditoría de eventos
 ```
 id uuid PK
-event_key text  -- p. ej. 'status_changed'
-entity_type text  -- p. ej. 'application'
+event_key text NOT NULL   -- p. ej. 'status_changed', 'email_sent'
+entity_type text NOT NULL -- p. ej. 'application'
 entity_id uuid
 application_id uuid → recruit_applications (on delete set null)
 template_id uuid → recruit_message_templates
-metadata jsonb DEFAULT '{}'
+metadata jsonb NOT NULL DEFAULT '{}'
 created_by uuid → profiles
-created_at timestamptz
+created_at timestamptz NOT NULL
 ```
 
-#### Otros
-
-**`recruit_rehire_flags`** — Semáforo de elegibilidad de recontratación por persona
+#### `recruit_rehire_flags` — Semáforo de reingreso
 ```
 id uuid PK
-person_id uuid → recruit_persons (cascade delete)
-color text CHECK ('red','yellow','green')
+person_id uuid NOT NULL → recruit_persons (cascade delete)
+color text NOT NULL CHECK ('red','yellow','green')
 reason text NOT NULL
 set_by uuid → profiles
-set_at timestamptz
+set_at timestamptz NOT NULL DEFAULT now()
 ```
 
-**`recruit_onboarding_plans`** — Planes de onboarding por postulación (tabla vacía actualmente, confirmada en BD)
+#### `recruit_onboarding_hosts` — Anfitriones de onboarding (1 row)
 ```
 id uuid PK
-application_id uuid → recruit_applications (UNIQUE — 1:1 con postulación)
+full_name text NOT NULL
+email text NOT NULL
+phone text
+is_active boolean NOT NULL DEFAULT true
+created_at timestamptz NOT NULL
+```
+
+#### `recruit_onboarding_plans` — Planes de onboarding (0 rows)
+```
+id uuid PK
+application_id uuid NOT NULL UNIQUE → recruit_applications (cascade delete)
 scheduled_at timestamptz
-location text
-dress_code text
-host_name text
-notes text
+location, dress_code, host_name, notes text
+host_id uuid → recruit_onboarding_hosts (on delete set null)
 created_by uuid → profiles
-created_at, updated_at timestamptz
+created_at, updated_at timestamptz NOT NULL
 ```
-Usada por `send_email` para resolver variables `{onboarding_date}`, `{onboarding_time}`, `{dress_code}`, `{host_name}`.
+Usada por `send_email` para resolver `{onboarding_date}`, `{onboarding_time}`, `{dress_code}`, `{host_name}`.
 
-**`core_employees`** — Empleados contratados (Fase 2, tabla vacía actualmente)
-```
-id uuid PK
-first_name, last_name text
-phone_mobile, email_work text
-position, branch text
-hire_date date
-status text CHECK ('active','inactive') DEFAULT 'active'
-created_at, updated_at timestamptz
-```
-Referenciada por `recruit_applications.hired_employee_id`.
-
-### Funciones RPC Públicas
-
-| Función | Propósito |
-|---|---|
-| `get_occupied_slots()` | Devuelve slots de entrevista ocupados (usado por `SlotCalendarV2`). Confirmado en BD. |
-| `recruit_change_status(p_application_id, p_status_key, p_reason, p_note)` | Cambio autorizado de estatus + inserción de nota opcional |
-
-### Archivos SQL Adicionales
+### Archivo de Referencia
 
 | Archivo | Propósito |
 |---|---|
-| `database/schema_clean_v2.sql` | Referencia más cercana al esquema real — DDL + triggers + RLS. La BD viva puede diferir |
-| `database/seed_clean.sql` | Semilla: estatus, catálogo de documentos, transiciones (usar después del esquema) |
-| `database/patches/auto_assign_recruiter.sql` | Trigger de auto-asignación (puede solaparse con la lógica de la edge function) |
-| `database/patches/auto_create_profile.sql` | Crea fila en `profiles` al insertar en `auth.users` |
-| `database/patches/public_submission_policies.sql` | RLS adicional para la postulación pública |
-| `database/patches/public_get_occupied_slots.sql` | RPC/vista para slots de entrevista ocupados |
-| `database/patches/storage_policies.sql` | Políticas RLS del bucket de storage |
-| `database/tests/rls_smoke.sql` | Verificaciones manuales de RLS |
+| `database/schema.sql` | DDL completo extraído de la BD viva (2026-04-20). Incluye tablas, triggers, RLS, funciones, storage. **Solo referencia — no ejecutar en producción sin revisar.** |
 
 ---
 
@@ -839,37 +867,30 @@ FRONTEND_URL=                 # Usado para construir {track_url} en los correos
 - **Tipo de entrevista**: `recruit_interviews.interview_type` acepta `'phone'`, `'in_person'` y `'virtual'` (confirmado en BD viva). La edge function `schedule_interview` siempre inserta `'virtual'`.
 - **`suggested_slot_1/2/3`**: Los tres campos existen en la BD real. Solo `slot_1` es capturado en `ApplyFormValues.availability`.
 - **Transiciones sin plantillas**: En la BD actual **ninguna transición tiene `template_key` configurado**. Los correos se envían manualmente desde el CRM o invocando directamente la edge function `send_email`.
-- **Estatus reales vs seed**: La BD tiene 13 estatus activos incluyendo `virtual_scheduled`, `virtual_done` y `onboarding`, que no están en `seed_clean.sql`. Siempre consultar la BD para el catálogo actual.
-- **Documento de aplicación activo**: El único tipo de documento `stage='application'` activo en BD es `solicitud_empleo` (no `cv_solicitud` como aparece en `seed_clean.sql`).
+- **Estatus activos**: 10 en total. Ver tabla en sección Esquema de BD. No existen `interview_scheduled`, `interview_done_pass`, `interview_done_fail`.
+- **Documento de aplicación activo**: Único `stage='application'` activo es `solicitud_empleo`.
 
 ---
 
 ## Ciclo de Vida de la Postulación
 
-El pipeline real en BD es permisivo — las 156 transiciones cubren prácticamente todas las combinaciones posibles entre los 13 estatus. El flujo de negocio intencionado (según el código y las plantillas) es:
+El pipeline tiene 10 estatus activos. La matriz de transiciones es permisiva. El flujo de negocio intencionado es:
 
 ```
-new (candidato envía solicitud)
-  ↓ reclutador revisa
-validation
-  ↓ se agenda reunión virtual o entrevista presencial
-virtual_scheduled  (REUNIÓN VIRTUAL — videollamada)
-  ↓ resultado positivo
-virtual_done  →  documents_pending
-                   ↓ documentos validados
-                   documents_complete
-                     ↓
-                     onboarding / onboarding_scheduled
-                       ↓
-                       hired ✅
+new  →  validation  →  virtual_scheduled  →  virtual_done
+                                                  ↓
+                                          documents_pending
+                                                  ↓
+                                          documents_complete
+                                                  ↓
+                                     onboarding_scheduled / onboarding
+                                                  ↓
+                                               hired
 
-interview_scheduled  (ENTREVISTA PRESENCIAL)
-  ↓
-interview_done_pass → documents_pending → documents_complete → hired ✅
-interview_done_fail → rejected
+Cualquier estatus  →  rejected
 ```
 
-> Los `template_key` en `recruit_status_transitions` están todos en null en la BD actual. Los correos se disparan manualmente desde el CRM o invocando la edge function `send_email` directamente — no de forma automática al cambiar de estatus.
+> Los `template_key` en `recruit_status_transitions` pueden configurarse para envío automático de correo al cambiar estatus. Si están en null, los correos se envían manualmente desde el CRM.
 
 ### Sistema de Semáforo (traffic_light)
 
@@ -880,13 +901,11 @@ Asignado manualmente por los reclutadores en cada postulación:
 
 ### Auto-Asignación
 
-Existen **dos** mecanismos de auto-asignación que pueden solaparse:
+Existen **dos** mecanismos que actúan en la misma postulación:
 
-1. **Edge function `submit_application`**: Consulta todos los perfiles `rh_recruiter`, cuenta postulaciones activas no terminales, asigna al de menor carga (desempate aleatorio). Se ejecuta atómicamente con el INSERT usando service role.
+1. **Edge function `submit_application`**: Cuenta postulaciones activas no terminales por reclutador, asigna al de menor carga (desempate aleatorio). Se ejecuta con service role antes del INSERT.
 
-2. **Trigger de BD `fn_auto_assign_recruiter`** (BEFORE INSERT en `recruit_applications`): Asigna el reclutador disponible (acepta tanto `rh_recruiter` como `rh_admin`) y adicionalmente **auto-avanza el estatus de `new` a `validation`** en el mismo INSERT. Puede solaparse con la lógica de la edge function.
-
-3. **Trigger de BD `auto_assign_recruiter`** (BEFORE INSERT en `recruit_applications`): Variante anterior, solo asigna `rh_recruiter`. Puede coexistir con `fn_auto_assign_recruiter` — **revisar si ambos están activos** para evitar conflictos.
+2. **Trigger de BD `trigger_auto_assign_recruiter`** (BEFORE INSERT en `recruit_applications`): Solo asigna si `assigned_to IS NULL`. Round-robin entre `rh_recruiter` excluyendo estatus `rejected` y `hired`.
 
 ---
 

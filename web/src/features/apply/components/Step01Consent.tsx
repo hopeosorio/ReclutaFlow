@@ -19,6 +19,7 @@ interface Step01ConsentProps {
   signatureValue: string | null;
   onSignatureChange: (v: string | null) => void;
   onScrollComplete?: () => void;
+  hasScrolledToBottomProp?: boolean;
 }
 
 export default function Step01Consent({
@@ -27,9 +28,10 @@ export default function Step01Consent({
   privacyNotice,
   signatureValue,
   onSignatureChange,
-  onScrollComplete
+  onScrollComplete,
+  hasScrolledToBottomProp = false
 }: Step01ConsentProps) {
-  const [hasScrolledToBottom, setHasScrolledToBottom] = useState(false);
+  const [hasScrolledToBottom, setHasScrolledToBottom] = useState(hasScrolledToBottomProp);
   const [nameTouched, setNameTouched] = useState(false);
   const [showReadWarning, setShowReadWarning] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -71,7 +73,7 @@ export default function Step01Consent({
   const contentHtml = useMemo(() => marked.parse(content) as string, [content]);
 
   return (
-    <div className="flex-center step-enter">
+    <div className="flex-center" style={{ userSelect: "none", WebkitUserSelect: "none" }}>
       <div className="pro-card compact-card" style={{ maxWidth: '1250px', width: '100%', padding: '2rem' }}>
         <SectionTitle mono="LEGAL" title="AVISO DE PRIVACIDAD" />
 
@@ -100,7 +102,7 @@ export default function Step01Consent({
 
           <div className="flex justify-center items-center mt-4" style={{ minHeight: '1.2rem' }}>
             <div className={`transition-all duration-700 ${hasScrolledToBottom ? 'opacity-40' : 'opacity-100'}`}>
-              <span className="mono" style={{ fontSize: '0.65rem', color: 'var(--accent)', fontWeight: 'bold', textAlign: 'center' }}>
+              <span className="mono" style={{ fontSize: '0.65rem', color: 'var(--accent)', fontWeight: 'bold', textAlign: 'center', userSelect: 'none', WebkitUserSelect: 'none' }}>
                 {hasScrolledToBottom ? (
                   <>AVISO LEÍDO INTEGRALMENTE</>
                 ) : (
@@ -124,7 +126,13 @@ export default function Step01Consent({
         )}
         <div
           className={`consent-signature-grid transition-all duration-700 ${hasScrolledToBottom ? 'opacity-100 scale-100' : 'opacity-10 grayscale blur-[2px]'}`}
-          style={{ marginBottom: '2rem', position: 'relative' }}
+          style={{ 
+            marginBottom: '2rem', 
+            position: 'relative',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '2rem'
+          }}
         >
           {/* Overlay que intercepta clics antes de leer el aviso */}
           {!hasScrolledToBottom && (
@@ -134,43 +142,45 @@ export default function Step01Consent({
             />
           )}
 
+          <div className="name-section" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <label className="mono mb-2" style={{ fontSize: '0.65rem' }}>NOMBRE COMPLETO</label>
+            <input
+              className="glass-input"
+              placeholder="NOMBRE Y APELLIDOS"
+              style={{
+                fontSize: '1.5rem', padding: '1rem 0', textTransform: 'uppercase',
+                opacity: hasScrolledToBottom ? 1 : 0.5,
+                borderColor: nameTouched && !isNameValid ? 'var(--error, #ff4d6d)' : undefined,
+                outline: nameTouched && !isNameValid ? '1px solid var(--error, #ff4d6d)' : undefined,
+              }}
+              disabled={!hasScrolledToBottom}
+              {...register("signer_name", { required: true })}
+              onChange={(e) => {
+                e.target.value = e.target.value.toUpperCase();
+                register("signer_name").onChange(e);
+              }}
+              onBlur={() => setNameTouched(true)}
+            />
+            <p className="mono" style={{ fontSize: '0.62rem', color: 'var(--text-dim)', marginTop: '4px', letterSpacing: '0.02em', opacity: 0.7, userSelect: 'none', WebkitUserSelect: 'none' }}>
+              Debe corresponder exactamente al de tu identificación oficial.
+            </p>
+            {nameTouched && !isNameValid && signerName.trim().length > 0 && (
+              <p className="mono" style={{ fontSize: '0.6rem', color: 'var(--error, #ff4d6d)', marginTop: '2px', userSelect: 'none', WebkitUserSelect: 'none' }}>
+                Escribe tu nombre completo (nombre y ambos apellidos).
+              </p>
+            )}
+          </div>
+
           <div className="signature-section">
             <label className="mono mb-2" style={{ fontSize: '0.65rem' }}>FIRMA DIGITAL</label>
             <div style={{ border: '1px solid var(--border-dim)', borderRadius: '12px', padding: '0.8rem', background: 'rgba(0,0,0,0.3)', transition: 'all 0.5s ease' }}>
               <SignaturePad value={signatureValue} onChange={onSignatureChange} disabled={!hasScrolledToBottom} />
             </div>
-          </div>
-
-          <div className="name-section" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            <div>
-              <label className="mono mb-2" style={{ fontSize: '0.65rem' }}>NOMBRE COMPLETO</label>
-              <input
-                className="glass-input"
-                placeholder="NOMBRE Y APELLIDOS"
-                style={{
-                  fontSize: '1.5rem', padding: '1.5rem 0', textTransform: 'uppercase',
-                  opacity: hasScrolledToBottom ? 1 : 0.5,
-                  borderColor: nameTouched && !isNameValid ? 'var(--error, #ff4d6d)' : undefined,
-                  outline: nameTouched && !isNameValid ? '1px solid var(--error, #ff4d6d)' : undefined,
-                }}
-                disabled={!hasScrolledToBottom}
-                {...register("signer_name", { required: true })}
-                onChange={(e) => {
-                  e.target.value = e.target.value.toUpperCase();
-                  register("signer_name").onChange(e);
-                }}
-                onBlur={() => setNameTouched(true)}
-              />
-              {nameTouched && !isNameValid && signerName.trim().length > 0 && (
-                <p className="mono" style={{ fontSize: '0.6rem', color: 'var(--error, #ff4d6d)', marginTop: '6px' }}>
-                  Escribe tu nombre completo (nombre y ambos apellidos).
-                </p>
-              )}
-            </div>
-
-            {/* PART 3: FINAL CHECKBOX (FULL WIDTH) */}
+            <p className="mono" style={{ fontSize: '0.62rem', color: 'var(--text-dim)', marginTop: '8px', letterSpacing: '0.02em', opacity: 0.7, userSelect: 'none', WebkitUserSelect: 'none' }}>
+              Debe corresponder a la de tu identificación oficial.
+            </p>
             <div className={`consent-final-reveal transition-all duration-700 ${canAccept ? 'opacity-100 translate-y-0 success-glow' : 'opacity-20'}`}
-              style={{ width: '100%' }}>
+              style={{ width: '100%', marginTop: '0.5rem', userSelect: 'none', WebkitUserSelect: 'none' }}>
               <label className="checkbox" style={{
                 display: 'flex', alignItems: 'center', gap: '1.5rem',
                 background: canAccept ? 'rgba(61,90,254,0.1)' : 'rgba(255,255,255,0.02)',
@@ -179,7 +189,9 @@ export default function Step01Consent({
                 cursor: canAccept ? 'pointer' : 'not-allowed',
                 boxShadow: canAccept ? '0 10px 30px rgba(61, 90, 254, 0.2)' : 'none',
                 width: '100%',
-                animation: showPulse ? 'success-pulse 1.2s ease-out 1' : 'none' // Destello sutil único de 1.2s
+                animation: showPulse ? 'success-pulse 1.2s ease-out 1' : 'none',
+                userSelect: 'none',
+                WebkitUserSelect: 'none'
               }}>
                 <input
                   type="checkbox"
@@ -201,7 +213,7 @@ export default function Step01Consent({
           <div className="validation-badges" style={{ display: 'flex', flexWrap: 'wrap', gap: '2rem' }}>
             <div className="badge mono flex align-center gap-2" style={{
               opacity: hasScrolledToBottom ? 1 : 0.3,
-              color: hasScrolledToBottom ? 'var(--accent)' : 'white',
+              color: hasScrolledToBottom ? 'var(--accent)' : 'var(--text-main)',
               fontSize: '0.65rem', border: '1px solid currentColor',
               padding: '6px 14px', borderRadius: '6px',
               transition: 'all 0.3s ease',
@@ -213,7 +225,7 @@ export default function Step01Consent({
 
             <div className="badge mono flex align-center gap-2" style={{
               opacity: isSigned ? 1 : 0.3,
-              color: isSigned ? 'var(--accent)' : 'white',
+              color: isSigned ? 'var(--accent)' : 'var(--text-main)',
               fontSize: '0.65rem', border: '1px solid currentColor',
               padding: '6px 14px', borderRadius: '6px',
               transition: 'all 0.3s ease',
@@ -226,7 +238,7 @@ export default function Step01Consent({
             <div className="badge mono" style={{
               display: 'flex', alignItems: 'center', gap: '0.6rem',
               opacity: isNameValid ? 1 : 0.3,
-              color: isNameValid ? 'var(--accent)' : 'white',
+              color: isNameValid ? 'var(--accent)' : 'var(--text-main)',
               fontSize: '0.65rem', border: '1px solid currentColor',
               padding: '6px 14px', borderRadius: '6px',
               transition: 'all 0.3s ease',

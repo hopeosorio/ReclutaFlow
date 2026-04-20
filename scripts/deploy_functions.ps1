@@ -5,11 +5,15 @@ param(
 
 Write-Host "Deploying Supabase Edge Functions..."
 
-# Public function (no JWT required)
+# Public (no JWT required)
 supabase functions deploy submit_application --project-ref $ProjectRef --no-verify-jwt
 
-# Internal functions (JWT required)
-supabase functions deploy change_status --project-ref $ProjectRef
-supabase functions deploy send_email --project-ref $ProjectRef
+# Internal (all use --no-verify-jwt and implement their own auth)
+supabase functions deploy change_status --project-ref $ProjectRef --no-verify-jwt
+supabase functions deploy send_email --project-ref $ProjectRef --no-verify-jwt
+supabase functions deploy schedule_interview --project-ref $ProjectRef --no-verify-jwt
+supabase functions deploy get_application_preview --project-ref $ProjectRef --no-verify-jwt
+supabase functions deploy get_crm_metrics --project-ref $ProjectRef --no-verify-jwt
+supabase functions deploy remind_interviews --project-ref $ProjectRef --no-verify-jwt
 
-Write-Host "Done. Remember to set secrets: SUPABASE_SERVICE_ROLE_KEY. Email is log-only unless EMAIL_SEND_MODE=sendgrid or EMAIL_SEND_MODE=smtp."
+Write-Host "Done (7 functions deployed). Remember to set secrets: SUPABASE_SERVICE_ROLE_KEY, EMAIL_SEND_MODE, SMTP_*, SENDGRID_*, FRONTEND_URL."

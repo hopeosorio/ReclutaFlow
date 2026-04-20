@@ -1,0 +1,161 @@
+        .apply-header h1 { line-height: 1; letter-spacing: -0.05em; }
+        .step-indicator-bar { display: flex; gap: 1rem; border-bottom: 1px solid var(--border-dim); padding-bottom: 0.8rem; }
+        .step-indicator-item { display: flex; align-items: center; gap: 0.6rem; opacity: 0.3; transition: opacity 0.4s ease; flex: 1; }
+        .step-indicator-item[data-active="true"] { opacity: 1; }
+        .step-icon-wrapper { border: 1px solid var(--border-light); border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+        .step-indicator-item[data-active="true"] .step-icon-wrapper { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 10px var(--accent-glow); }
+        .step-helper { display: block; font-weight: 800; color: var(--text-dim); text-transform: uppercase; }
+        .compact-card { padding: 2rem !important; }
+        .compact-card:hover { transform: none !important; }
+        .legal-box { background: rgba(255,255,255,0.01); border: 1px solid var(--border-dim); padding: 1.5rem; border-radius: 12px; line-height: 1.6; }
+        .job-bento-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; }
+        .job-card-item { background: var(--bg-soft); border: 1px solid var(--border-dim); padding: 1.8rem; border-radius: 16px; cursor: pointer; position: relative; transition: border-color 0.4s var(--ease-expo), background 0.4s var(--ease-expo), transform 0.4s var(--ease-expo), box-shadow 0.4s var(--ease-expo); overflow: hidden; display: flex; flex-direction: column; }
+        .job-card-item:hover { border-color: var(--border-light); transform: translateY(-4px); background: var(--bg-accent); }
+        .job-card-item[data-selected="true"] { border-color: var(--accent); background: var(--bg-accent); box-shadow: 0 10px 30px rgba(61, 90, 254, 0.15); }
+        .job-tag { font-size: 0.5rem; color: var(--accent); border: 1px solid var(--accent); width: max-content; padding: 2px 8px; border-radius: 4px; text-transform: uppercase; font-weight: 800; background: rgba(61, 90, 254, 0.1); }
+        .meta-row { display: flex; gap: 0.5rem; font-size: 0.65rem; font-weight: 600; text-transform: uppercase; }
+        .form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; }
+        .glass-input.compact { padding: 0.7rem 0 !important; font-size: 0.85rem !important; }
+        .compact-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 0.8rem; margin-top: 0.8rem; }
+        .compact-choice { border: 1px solid var(--border-dim); padding: 0.6rem 0.8rem; border-radius: 6px; display: flex; align-items: center; gap: 0.6rem; cursor: pointer; font-size: 0.75rem; transition: border-color 0.3s ease, background 0.3s ease; }
+        .compact-choice:has(input:checked) { border-color: var(--accent); background: rgba(61,90,254,0.08); }
+        .system-err { color: #ff4d4d; font-size: 0.65rem; background: rgba(255, 77, 77, 0.05); padding: 0.4rem 0.8rem; border-left: 2px solid #ff4d4d; }
+        @keyframes revealIn { from { opacity: 0; } to { opacity: 1; } }
+        .step-enter { animation: revealIn 0.4s ease-out forwards; }
+        .step-exit { opacity: 0; transform: translateY(-5px); transition: all 0.3s ease; }
+        
+        @keyframes successPop { from { opacity: 0; transform: scale(0.95); filter: blur(10px); } to { opacity: 1; transform: scale(1); filter: blur(0); } }
+        .success-reveal { animation: successPop 0.8s var(--ease-expo) forwards; }
+        
+        .is-submitting, .is-submitting * {
+          animation: none !important;
+          transition: none !important;
+          transform: none !important;
+        }
+        
+        .elite-bg-glow { position: fixed; top: 0; right: 0; width: 400px; height: 400px; background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%); z-index: -1; opacity: 0.2; pointer-events: none; }
+        .detail-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 3rem; }
+        .field-err { color: #ff4d4d; font-size: 0.55rem; font-family: 'JetBrains Mono', monospace; font-weight: 800; margin-top: 0.3rem; display: block; letter-spacing: 0.05em; }
+        .flex-between { display: flex; justify-content: space-between; }
+        .flex-center { display: flex; justify-content: center; align-items: center; }
+        .align-center { align-items: center; }
+        .radio-btn.compact { font-size: 0.7rem; border: 1px solid var(--border-dim); padding: 0.4rem 0.8rem; border-radius: 50px; cursor: pointer; display: flex; align-items: center; gap: 0.4rem; justify-content: center; width: 100%; }
+        .radio-btn.compact:has(input:checked) { border-color: var(--accent); background: rgba(61,90,254,0.1); }
+        .cert-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 80px)); gap: 0.8rem; margin-top: 0.8rem; }
+        
+        /* ELITE CALENDAR STYLES (Theme aware) */
+        .elite-calendar { 
+          width: 100% !important; 
+          background: transparent !important; 
+          border: none !important; 
+          font-family: 'JetBrains Mono', monospace !important; 
+        }
+        .react-calendar__navigation button { 
+          color: var(--text-main) !important; 
+          font-size: 1.2rem !important; 
+          background: transparent !important; 
+          border: none !important;
+          min-width: 44px !important;
+          border-radius: 8px !important;
+          transition: background 0.3s ease !important;
+        }
+        .react-calendar__navigation span {
+          color: var(--text-main) !important;
+          font-weight: 800 !important;
+        }
+        .react-calendar__navigation button:enabled:hover,
+        .react-calendar__navigation button:enabled:focus {
+          background: var(--border-light) !important;
+        }
+        .react-calendar__navigation button:disabled {
+          background: transparent !important;
+          opacity: 0.1 !important;
+        }
+        .react-calendar__month-view__weekdays { text-transform: uppercase; font-size: 0.6rem; color: var(--accent); font-weight: 800; border-bottom: 1px solid var(--border-dim); margin-bottom: 0.5rem; padding-bottom: 0.5rem; }
+        .react-calendar__tile { color: var(--text-main) !important; height: 50px !important; border-radius: 8px !important; font-size: 0.8rem !important; }
+        .react-calendar__tile:enabled:hover { background: var(--bg-soft) !important; color: var(--accent) !important; }
+        .react-calendar__tile--active { background: var(--accent) !important; box-shadow: 0 0 15px var(--accent-glow) !important; color: #fff !important; }
+        .react-calendar__tile--now { background: var(--border-dim) !important; }
+        .react-calendar__tile:disabled { background: transparent !important; opacity: 0.1 !important; color: var(--text-main) !important; }
+
+        .success-title { font-size: 3.5rem; }
+        
+        .hour-slot:hover:not(:disabled) {
+          border-color: var(--accent) !important;
+          background: rgba(61,90,254,0.1) !important;
+          transform: translateY(-2px);
+        }
+        .hour-slot.selected {
+          animation: pulse-border 2s infinite;
+        }
+        @keyframes pulse-border {
+          0% { box-shadow: 0 0 0 0px var(--accent-glow); }
+          70% { box-shadow: 0 0 0 6px transparent; }
+          100% { box-shadow: 0 0 0 0px transparent; }
+        }
+
+        /* ── MOBILE ── */
+        @media (max-width: 768px) {
+          /* Padding top para separar del navbar */
+          .apply-flow-section { padding-top: 5rem !important; }
+
+          .apply-header { flex-direction: column !important; align-items: flex-start !important; gap: 0.5rem; }
+          .success-title { font-size: 1.8rem !important; line-height: 1.1 !important; margin-bottom: 1rem !important; }
+          .success-reveal { padding: 1rem !important; }
+          .success-reveal .pro-card { padding: 1.5rem !important; margin-top: 2rem !important; }
+          .step-content { display: none !important; }
+          .step-indicator-bar { gap: 0 !important; width: 100%; }
+          .step-indicator-item { flex: 1 !important; justify-content: center; min-width: 0; }
+          .detail-grid { grid-template-columns: 1fr !important; gap: 1.5rem !important; }
+          .detail-side { border-top: 1px solid var(--border-dim); padding-top: 1.5rem; }
+          .form-grid-2 { grid-template-columns: 1fr !important; }
+          .form-grid-3 { grid-template-columns: 1fr !important; }
+          .span-2 { grid-column: span 1 !important; }
+          .compact-card { padding: 1rem !important; }
+          .apply-footer { flex-direction: column !important; align-items: stretch !important; gap: 1rem; }
+          .apply-footer .actions { flex-direction: column !important; width: 100%; gap: 0.75rem !important; }
+          .apply-footer .actions button { width: 100%; justify-content: center; }
+          .availability-wrapper { min-height: auto !important; }
+          .slot-calendar-grid { grid-template-columns: 1fr !important; gap: 1.5rem !important; }
+          .react-calendar__tile { height: 42px !important; font-size: 0.7rem !important; }
+
+          /* Firma digital — evitar desbordamiento */
+          .consent-signature-grid .signature-section,
+          .consent-signature-grid .name-section { width: 100%; min-width: 0; box-sizing: border-box; }
+          .signature-container { width: 100% !important; box-sizing: border-box; }
+
+          /* Input nombre completo */
+          .consent-signature-grid input[type="text"],
+          .consent-signature-grid .glass-input {
+            width: 100% !important;
+            box-sizing: border-box !important;
+            font-size: 1.1rem !important;
+          }
+
+          /* Checkbox aviso de privacidad */
+          .consent-final-reveal { width: 100% !important; box-sizing: border-box !important; }
+          .consent-final-reveal .checkbox {
+            width: 100% !important;
+            box-sizing: border-box !important;
+            padding: 1rem !important;
+            gap: 0.75rem !important;
+          }
+          .consent-final-reveal .checkbox span.outfit-bold { font-size: 0.85rem !important; }
+
+          /* Prevent auto-zoom on mobile inputs */
+          .glass-input.compact, 
+          select.glass-input,
+          textarea.glass-input { 
+            font-size: 16px !important; 
+          }
+        }
+
+        /* ── Step 4: availability card — neutralize pro-card scroll animation ── */
+        .availability-card.pro-card {
+          transition: none !important;
+          will-change: auto !important;
+          animation: none !important;
+        }
+        .availability-card.pro-card:hover {
+          transform: none !important;
+        }

@@ -65,14 +65,14 @@ export interface ApplyFormValues {
     desired_salary: string;
     has_experience: boolean | string;
     years_experience: number;
-    schedule_preference: "morning" | "afternoon" | "both" | "rotative";
+    schedule_preference: "morning" | "afternoon" | "both" | "rotative" | "";
     can_rotate_shifts: boolean;
     fixed_commitment_bool: boolean | string;
     fixed_commitment: string;
     weekend_availability: boolean | string;
     previous_employee: boolean | string;
     previous_employee_reason?: string;
-    agrees_with_salary: "yes" | "no" | "negotiable";
+    agrees_with_salary: "yes" | "no" | "negotiable" | "";
     has_infonavit: boolean | string;
     salary_agreement: boolean | string;
     adjustments_required: boolean | string;

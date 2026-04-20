@@ -18,8 +18,15 @@ fi
 
 echo "Deploying Supabase Edge Functions..."
 
+# Public (no JWT required)
 "${SUPABASE_CMD[@]}" functions deploy submit_application --project-ref "$PROJECT_REF" --no-verify-jwt
+
+# Internal (all use --no-verify-jwt and implement their own auth)
 "${SUPABASE_CMD[@]}" functions deploy change_status --project-ref "$PROJECT_REF" --no-verify-jwt
 "${SUPABASE_CMD[@]}" functions deploy send_email --project-ref "$PROJECT_REF" --no-verify-jwt
+"${SUPABASE_CMD[@]}" functions deploy schedule_interview --project-ref "$PROJECT_REF" --no-verify-jwt
+"${SUPABASE_CMD[@]}" functions deploy get_application_preview --project-ref "$PROJECT_REF" --no-verify-jwt
+"${SUPABASE_CMD[@]}" functions deploy get_crm_metrics --project-ref "$PROJECT_REF" --no-verify-jwt
+"${SUPABASE_CMD[@]}" functions deploy remind_interviews --project-ref "$PROJECT_REF" --no-verify-jwt
 
-echo "Done. Remember to set secrets: SUPABASE_SERVICE_ROLE_KEY. Email is log-only unless EMAIL_SEND_MODE=sendgrid or EMAIL_SEND_MODE=smtp."
+echo "Done (7 functions deployed). Remember to set secrets: SUPABASE_SERVICE_ROLE_KEY, EMAIL_SEND_MODE, SMTP_*, SENDGRID_*, FRONTEND_URL."

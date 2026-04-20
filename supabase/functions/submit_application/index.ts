@@ -152,11 +152,12 @@ serve(async (req) => {
   // ─── AUTO-ASSIGNMENT LOGIC (Balanced Round-Robin) ───
   let assignedTo: string | null = null;
   try {
-    // 1. Get eligible recruiters
+    // 1. Get eligible recruiters (strictly excluding rh_admin)
     const { data: recruiters } = await admin
       .from("profiles")
       .select("id")
-      .eq("role", "rh_recruiter");
+      .eq("role", "rh_recruiter")
+      .neq("role", "rh_admin");
 
     if (recruiters && recruiters.length > 0) {
       const recruiterIds = recruiters.map(r => r.id);
@@ -198,15 +199,22 @@ serve(async (req) => {
       assignedTo = candidatesList[Math.floor(Math.random() * candidatesList.length)];
     }
   } catch (assignError) {
-    console.warn("Auto-assignment failed, falling back to random recruiter:", assignError);
+    console.warn("Auto-assignment failed or complex logic threw an error:", assignError);
     // Fallback: Pick a recruiter at random if the complex logic fails
     try {
-        const { data: fallbackRecruiters } = await admin
+        const { data: fallbackRecruiters, error: fallbackError } = await admin
           .from("profiles")
           .select("id")
-          .eq("role", "rh_recruiter");
-        if (fallbackRecruiters && fallbackRecruiters.length > 0) {
+          .eq("role", "rh_recruiter")
+          .neq("role", "rh_admin");
+
+        if (fallbackError) {
+          console.error("Fallback recruiter fetch failed:", fallbackError);
+        } else if (fallbackRecruiters && fallbackRecruiters.length > 0) {
             assignedTo = fallbackRecruiters[Math.floor(Math.random() * fallbackRecruiters.length)].id;
+        } else {
+            console.warn("CRITICAL: No rh_recruiter found in fallback. Application will remain unassigned instead of assigning to rh_admin.");
+            assignedTo = null;
         }
     } catch { /* Silent fail */ }
   }
