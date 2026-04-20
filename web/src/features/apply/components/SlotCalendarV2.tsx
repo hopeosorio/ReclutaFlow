@@ -150,8 +150,9 @@ export default function SlotCalendarV2({ slots, onChange, error, occupiedSlots }
                         </>
                     ) : (
                         <div className="mb-8 p-6 mono color-dim flex-center"
-                            style={{ border: '1px dashed var(--border-dim)', borderRadius: '12px', fontSize: '0.7rem', minHeight: '200px' }}>
-                            ← SELECCIONA UN DÍA EN EL CALENDARIO
+                            style={{ border: '1px dashed var(--border-dim)', borderRadius: '12px', fontSize: '0.7rem', minHeight: '200px', flexDirection: 'column', textAlign: 'center', gap: '0.5rem' }}>
+                            <span className="desktop-arrow">← SELECCIONA UN DÍA EN EL CALENDARIO</span>
+                            <span className="mobile-arrow">↑<br/>SELECCIONA UN DÍA EN EL CALENDARIO</span>
                         </div>
                     )}
                 </div>

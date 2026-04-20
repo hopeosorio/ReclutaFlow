@@ -94,6 +94,10 @@
           100% { box-shadow: 0 0 0 0px transparent; }
         }
 
+        /* ── DESKTOP ONLY ── */
+        .mobile-arrow { display: none; }
+        .desktop-arrow { display: inline; }
+
         /* ── MOBILE ── */
         @media (max-width: 768px) {
           /* Padding top para separar del navbar */
@@ -141,6 +145,10 @@
             gap: 0.75rem !important;
           }
           .consent-final-reveal .checkbox span.outfit-bold { font-size: 0.85rem !important; }
+
+          /* Responsive Arrows */
+          .desktop-arrow { display: none !important; }
+          .mobile-arrow { display: inline !important; }
 
           /* Prevent auto-zoom on mobile inputs */
           .glass-input.compact, 

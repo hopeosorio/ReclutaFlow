@@ -200,7 +200,7 @@ export default function Step01Consent({
                   style={{ width: '25px', height: '25px', accentColor: 'var(--accent)', cursor: canAccept ? 'pointer' : 'not-allowed', flexShrink: 0 }}
                 />
                 <div>
-                  <span className="outfit-bold" style={{ fontSize: '1rem', color: canAccept ? 'black' : 'gray', lineHeight: 1.2 }}>ACEPTO QUE HE LEÍDO Y ESTOY DE ACUERDO CON LA INFORMACIÓN PROPORCIONADA</span>
+                  <span className="outfit-bold" style={{ fontSize: '1rem', color: canAccept ? 'var(--text-main)' : 'var(--text-dim)', lineHeight: 1.2 }}>ACEPTO QUE HE LEÍDO Y ESTOY DE ACUERDO CON LA INFORMACIÓN PROPORCIONADA</span>
                   <p className="mono" style={{ fontSize: '0.6rem', color: 'var(--text-dim)', marginTop: '4px' }}>ESTA ACCIÓN TIENE VALIDEZ LEGAL DE CONSENTIMIENTO EXPRESO.</p>
                 </div>
               </label>

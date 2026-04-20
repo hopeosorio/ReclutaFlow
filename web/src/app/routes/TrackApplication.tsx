@@ -473,11 +473,7 @@ export default function TrackApplication() {
                     </button>
                 </div>
 
-                {loading && (
-                    <div style={{ position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(4px)' }}>
-                        <Clock className="animate-spin" size={36} style={{ color: 'var(--accent)' }} />
-                    </div>
-                )}
+
 
             </div>
 
@@ -856,6 +852,12 @@ export default function TrackApplication() {
                     ELITE CORE v5.0 // SESSION_SECURE_{new Date().getFullYear()}
                 </p>
             </div>
+
+            {loading && (
+                <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2147483647, background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)' }}>
+                    <Clock className="animate-spin" size={36} style={{ color: 'var(--accent)' }} />
+                </div>
+            )}
         </section>
 
     );
