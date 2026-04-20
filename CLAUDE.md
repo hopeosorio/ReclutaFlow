@@ -32,11 +32,14 @@ npm run test:watch   # Modo observación
 # Servir edge functions localmente
 supabase functions serve
 
-# Desplegar todas las edge functions a Supabase
-bash scripts/deploy_functions.sh
-
-# Generar JWT de prueba (PowerShell)
-pwsh scripts/get_jwt.ps1
+# Desplegar todas las edge functions a Supabase (PROJECT_REF=lwjyxfflpxptdmgupgmj)
+supabase functions deploy submit_application --project-ref $PROJECT_REF --no-verify-jwt
+supabase functions deploy change_status --project-ref $PROJECT_REF --no-verify-jwt
+supabase functions deploy send_email --project-ref $PROJECT_REF --no-verify-jwt
+supabase functions deploy schedule_interview --project-ref $PROJECT_REF --no-verify-jwt
+supabase functions deploy get_application_preview --project-ref $PROJECT_REF --no-verify-jwt
+supabase functions deploy get_crm_metrics --project-ref $PROJECT_REF --no-verify-jwt
+supabase functions deploy remind_interviews --project-ref $PROJECT_REF --no-verify-jwt
 ```
 
 ### Base de datos
