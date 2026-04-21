@@ -136,7 +136,7 @@ export default function SlotCalendarV2({ slots, onChange, error, occupiedSlots }
                                             <CheckCircle2 size={22} style={{ color: 'var(--accent)', flexShrink: 0 }} />
                                             <div>
                                                 <div className="mono" style={{ fontSize: '0.6rem', color: 'var(--text-dim)', marginBottom: '2px' }}>HORARIO SELECCIONADO</div>
-                                                <div className="outfit-bold" style={{ fontSize: '0.9rem', color: 'white' }}>
+                                                <div className="outfit-bold" style={{ fontSize: '0.9rem', color: 'var(--text-main)' }}>
                                                     {format(new Date(confirmedSlot), "EEEE dd 'de' MMMM yyyy", { locale: es }).toUpperCase()}
                                                 </div>
                                                 <div className="mono" style={{ fontSize: '1rem', color: 'var(--accent)' }}>

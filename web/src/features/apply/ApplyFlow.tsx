@@ -21,7 +21,7 @@ import "./ApplyFlow.css";
 export default function ApplyFlow() {
   const [step, setStep] = useState(0);
   const [isTransitioning, setIsTransitioning] = useState(false);
-  const [hasScrolledConsent, setHasScrolledConsent] = useState(true);
+  const [hasScrolledConsent, setHasScrolledConsent] = useState(false);
   const [privacyNotice, setPrivacyNotice] = useState<PrivacyNotice | null>(null);
   const [jobPostings, setJobPostings] = useState<JobPosting[]>([]);
   const [selectedJobProfile, setSelectedJobProfile] = useState<JobProfile | null>(null);

@@ -248,7 +248,7 @@ export default function CrmApplicationDetail() {
     } else if (s === 'virtual_scheduled') {
       tabs = ['profile', 'documents', 'notes'];
       focus = 'REUNIÓN VIRTUAL AGENDADA';
-      nextStepText = 'CONFIRMAR SLOT Y GENERAR MEET';
+      nextStepText = 'REGISTRAR DICTAMEN DE EVALUACIÓN';
     } else if (s === 'virtual_done') {
       tabs = ['profile', 'interviews', 'notes'];
       focus = 'ENTREVISTA COMPLETADA';
@@ -337,9 +337,9 @@ export default function CrmApplicationDetail() {
     return baseTransitions;
   }, [application, transitions, stageConfig.docsValidated]);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (silent = false) => {
     if (!id) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     setError(null);
 
     const applicationRes = await supabase
@@ -568,8 +568,8 @@ export default function CrmApplicationDetail() {
   const triggerStatusChange = async (newStatus: string, reason?: string, note?: string) => {
     // 1. Manejo especial de agendamiento (Selección de Slot)
     // 2. Ejecutar cambio de estatus CENTRALIZADO (Lógica de Oro)
-    const { data: refreshData } = await supabase.auth.refreshSession();
-    const token = refreshData?.session?.access_token;
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData?.session?.access_token;
     if (!token) throw new Error("Sesión expirada. Recarga la página e inicia sesión nuevamente.");
 
     const res = await fetch(`${supabaseUrl}/functions/v1/change_status`, {
@@ -621,35 +621,34 @@ export default function CrmApplicationDetail() {
         toast.success("Estatus actualizado con éxito.");
       }
 
-      // Al contratar: enviar bienvenida al equipo al candidato
-      if (nextStatus === 'hired') {
-        const { data: { session: hiredSession } } = await supabase.auth.getSession();
-        const token = hiredSession?.access_token;
-        if (token && id) {
-          fetch(`${supabaseUrl}/functions/v1/send_email`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}`, "apikey": supabaseAnonKey! },
-            body: JSON.stringify({ application_id: id, template_key: "welcome_onboarding" }),
-          });
-        }
-      }
-
-      // Al solicitar documentos: enviar correo automático al candidato
-      if (nextStatus === 'documents_pending') {
-        const { data: { session: docsSession } } = await supabase.auth.getSession();
-        const token = docsSession?.access_token;
-        if (token && id) {
-          fetch(`${supabaseUrl}/functions/v1/send_email`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}`, "apikey": supabaseAnonKey! },
-            body: JSON.stringify({ application_id: id, template_key: "documents_request" }),
-          });
-        }
-      }
-
+      const resolvedStatus = nextStatus;
       setStatusReason("");
       setStatusNote("");
-      await loadData();
+      setShowManualTransition(false);
+      await loadData(true);
+      setNextStatus("");
+
+      // Correos post-transición — solo si el edge function no los mandó ya
+      if (!result.email?.template_key) {
+        const { data: { session: postSession } } = await supabase.auth.getSession();
+        const postToken = postSession?.access_token;
+        if (postToken && id) {
+          if (resolvedStatus === 'hired') {
+            fetch(`${supabaseUrl}/functions/v1/send_email`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "Authorization": `Bearer ${postToken}`, "apikey": supabaseAnonKey! },
+              body: JSON.stringify({ application_id: id, template_key: "welcome_onboarding" }),
+            });
+          }
+          if (resolvedStatus === 'documents_pending') {
+            fetch(`${supabaseUrl}/functions/v1/send_email`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "Authorization": `Bearer ${postToken}`, "apikey": supabaseAnonKey! },
+              body: JSON.stringify({ application_id: id, template_key: "documents_request" }),
+            });
+          }
+        }
+      }
     } catch (err: any) {
       console.error("Transition Error:", err);
       setStatusError(err.message);
@@ -679,7 +678,7 @@ export default function CrmApplicationDetail() {
       }
 
       toast.success("Resultado de entrevista procesado con éxito.");
-      await loadData();
+      await loadData(true);
     } catch (err: any) {
       toast.error(`Error al procesar resultado: ${err.message}`);
     }
@@ -702,7 +701,7 @@ export default function CrmApplicationDetail() {
     }
 
     setNoteText("");
-    await loadData();
+    await loadData(true);
   };
 
   const updateDocStatus = async (docId: string, status: "validated" | "rejected" | "under_review" | "pending") => {
@@ -718,7 +717,7 @@ export default function CrmApplicationDetail() {
       toast.error(updateError.message);
       return;
     }
-    await loadData();
+    await loadData(true);
     toast.success(`Documento ${status === 'validated' ? 'validado' : (status === 'rejected' ? 'rechazado' : 'actualizado')}`);
   };
 
@@ -737,7 +736,7 @@ export default function CrmApplicationDetail() {
     }
     setRejectingDocId(null);
     setRejectNote("");
-    await loadData();
+    await loadData(true);
     toast.info("Documento rechazado.");
 
     // Notify the candidate by email
@@ -771,7 +770,7 @@ export default function CrmApplicationDetail() {
   const sendDocumentsReminder = async () => {
     setSendingReminder(true);
     try {
-      const { data: refreshData } = await supabase.auth.refreshSession();
+      const { data: refreshData } = await supabase.auth.getSession();
       const token = refreshData?.session?.access_token;
       if (!token) throw new Error("Sesión expirada.");
       const res = await fetch(`${supabaseUrl}/functions/v1/send_email`, {
@@ -800,7 +799,7 @@ export default function CrmApplicationDetail() {
     try {
       await triggerStatusChange("documents_complete", "Expediente de contratación completo y validado.");
       toast.success("Expediente marcado como completo.");
-      loadData();
+      await loadData(true);
     } catch (err: any) {
       toast.error(`Error: ${err.message}`);
     }
@@ -875,7 +874,7 @@ export default function CrmApplicationDetail() {
       toast.success("Plan guardado. Notificaciones enviadas al candidato y al anfitrión.");
       setOnboardingSaved(true);
       setOnboardingEditMode(false);
-      loadData();
+      await loadData(true);
     } catch (err: any) {
       setOnboardingError(err.message);
     } finally {
@@ -902,7 +901,7 @@ export default function CrmApplicationDetail() {
         .eq("id", doc.id);
 
       if (!updateError) {
-        await loadData();
+        await loadData(true);
       }
     }
   };
@@ -981,7 +980,7 @@ export default function CrmApplicationDetail() {
       notes: "",
     });
 
-    await loadData();
+    await loadData(true);
   };
 
 
@@ -1047,7 +1046,7 @@ export default function CrmApplicationDetail() {
       }
 
       toast.success('ENTREVISTA AGENDADA: Los correos de notificación están en camino.');
-      await loadData();
+      await loadData(true);
     } catch (err: any) {
       toast.error(err.message || "Error al agendar entrevista.");
     } finally {
@@ -1060,7 +1059,6 @@ export default function CrmApplicationDetail() {
       display: 'grid',
       gridTemplateColumns: 'minmax(340px, 1fr) 3.2fr',
       gap: '2.5rem',
-      padding: '2rem',
       minHeight: '100%',
       background: 'var(--bg-pure)'
     }}>
@@ -1218,7 +1216,7 @@ export default function CrmApplicationDetail() {
                     <button className="btn-magnetic" onClick={() => setActiveTab('documents')} style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: 'var(--accent)', color: 'white', border: 'none', fontWeight: 900, borderRadius: '12px' }}>
                       VALIDAR DOCUMENTOS
                     </button>
-                    <button className="btn-magnetic" onClick={() => { setNextStatus('rejected'); document.getElementById('status-transition-form')?.scrollIntoView({ behavior: 'smooth' }); }} style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: 'rgba(239,68,68,0.05)', color: 'var(--danger)', border: '1px solid currentColor', fontWeight: 900, borderRadius: '12px' }}>
+                    <button className="btn-magnetic" onClick={() => { setActiveTab('profile'); setNextStatus('rejected'); setShowManualTransition(true); setTimeout(() => document.getElementById('status-transition-form')?.scrollIntoView({ behavior: 'smooth' }), 80); }} style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: 'rgba(239,68,68,0.05)', color: 'var(--danger)', border: '1px solid currentColor', fontWeight: 900, borderRadius: '12px' }}>
                       NO SELECCIONADO
                     </button>
                   </div>
@@ -1228,7 +1226,12 @@ export default function CrmApplicationDetail() {
                   <div style={{ display: 'flex', gap: '0.6rem' }}>
                     <button className="btn-magnetic" onClick={() => {
                       setActiveTab('profile');
-                      if (application?.suggested_slot_1) {
+                      if (application?.status_key === 'new') {
+                        setNextStatus('validation');
+                        setShowManualTransition(true);
+                        setTimeout(() => document.getElementById('status-transition-form')?.scrollIntoView({ behavior: 'smooth' }), 80);
+                      } else if (application?.suggested_slot_1) {
+                        setShowManualTransition(false);
                         setTimeout(() => document.getElementById('slot-confirmation-panel')?.scrollIntoView({ behavior: 'smooth' }), 80);
                       } else {
                         setNextStatus('virtual_scheduled');
@@ -1289,6 +1292,16 @@ export default function CrmApplicationDetail() {
                       style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: 'rgba(239,68,68,0.05)', color: onboardingSaved ? 'var(--danger)' : 'var(--text-muted)', border: `1px solid ${onboardingSaved ? 'currentColor' : 'var(--border-light)'}`, fontWeight: 900, borderRadius: '12px', opacity: onboardingSaved ? 1 : 0.5, cursor: onboardingSaved ? 'pointer' : 'not-allowed' }}
                     >
                       NO SELECCIONADO
+                    </button>
+                  </div>
+
+                ) : application?.status_key === 'virtual_scheduled' ? (
+                  <div style={{ display: 'flex', gap: '0.6rem' }}>
+                    <button className="btn-magnetic" onClick={() => { setInterviewResult('pass'); setTimeout(() => document.getElementById('interview-signoff-panel')?.scrollIntoView({ behavior: 'smooth' }), 80); }} style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: 'var(--accent)', color: 'white', border: 'none', fontWeight: 900, borderRadius: '12px' }}>
+                      ENTREVISTA APROBADA ✓
+                    </button>
+                    <button className="btn-magnetic" onClick={() => { setInterviewResult('fail'); setTimeout(() => document.getElementById('interview-signoff-panel')?.scrollIntoView({ behavior: 'smooth' }), 80); }} style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: 'rgba(239,68,68,0.05)', color: 'var(--danger)', border: '1px solid currentColor', fontWeight: 900, borderRadius: '12px' }}>
+                      NO APROBADO
                     </button>
                   </div>
 
@@ -1456,7 +1469,7 @@ export default function CrmApplicationDetail() {
 
               {/* ─── INTERVIEW SIGN OFF PANEL ─── */}
               {activeInterview && application?.status_key === 'virtual_scheduled' && (
-                <div className="reveal" style={{ marginBottom: '2rem' }}>
+                <div id="interview-signoff-panel" className="reveal" style={{ marginBottom: '2rem' }}>
                   <div className="pro-card" style={{ border: '2px solid var(--accent)', background: 'linear-gradient(135deg, rgba(61, 90, 254, 0.06) 0%, rgba(61, 90, 254, 0.02) 100%)' }}>
 
                     {/* Cabecera: fecha + botón meet */}
@@ -1830,7 +1843,7 @@ export default function CrmApplicationDetail() {
                           <button className="btn-ghost" style={{ padding: '0.5rem 1rem', fontSize: '0.65rem', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '0.4rem', border: '1px solid #22c55e', color: '#166534', background: 'rgba(34, 197, 94, 0.05)' }} onClick={async () => {
                             await supabase.from("recruit_interviews").update({ result: 'pass' }).eq("id", i.id);
                             toast.success("APROBADO");
-                            loadData();
+                            loadData(true);
                           }}>
                             <CheckCircle size={12} />
                             APROBAR
@@ -1838,7 +1851,7 @@ export default function CrmApplicationDetail() {
                           <button className="btn-ghost" style={{ padding: '0.5rem 1rem', fontSize: '0.65rem', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '0.4rem', border: '1px solid #ef4444', color: '#991b1b', background: 'rgba(239, 68, 68, 0.05)' }} onClick={async () => {
                             await supabase.from("recruit_interviews").update({ result: 'fail' }).eq("id", i.id);
                             toast.info("DESCARTADO");
-                            loadData();
+                            loadData(true);
                           }}>
                             <Trash2 size={12} />
                             DESCARTAR
@@ -2092,6 +2105,8 @@ export default function CrmApplicationDetail() {
             </div>
           )}
         </div>
+
+
       </main>
     </section>
   );

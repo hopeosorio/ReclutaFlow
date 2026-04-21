@@ -76,13 +76,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     init();
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       setSession(nextSession);
       if (!nextSession?.user) {
         setProfile(null);
         return;
       }
-      
+
+      // TOKEN_REFRESHED solo actualiza el token — no necesita re-fetch del perfil ni loading
+      if (event === 'TOKEN_REFRESHED') return;
+
       setLoading(true);
       setTimeout(() => {
         if (!active) return;
