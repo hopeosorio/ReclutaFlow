@@ -156,6 +156,7 @@ export default function TrackApplication() {
     const [dragOver, setDragOver] = useState<string | null>(null);
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [previewName, setPreviewName] = useState<string>("");
+    const [previewError, setPreviewError] = useState<string | null>(null);
 
     const fetchApplication = async () => {
         if (!loadId) return;
@@ -343,6 +344,7 @@ export default function TrackApplication() {
     };
 
     const handleDocumentPreview = async (path: string, name: string) => {
+        setPreviewError(null);
         try {
             const { data, error } = await supabase.storage
                 .from("recruit-docs")
@@ -352,7 +354,7 @@ export default function TrackApplication() {
             setPreviewName(name);
             setPreviewUrl(data.signedUrl);
         } catch (_err) {
-            setError("No se pudo cargar la vista previa del documento. Intenta de nuevo.");
+            setPreviewError("No se pudo cargar la vista previa del documento. Intenta de nuevo.");
         }
     };
 
@@ -427,6 +429,15 @@ export default function TrackApplication() {
         <section className="container-full" style={{ paddingTop: '80px', paddingBottom: '6rem', minHeight: '100vh', position: 'relative' }}>
             <InteractiveStars />
 
+            {/* --- Document Preview Error Banner --- */}
+            {previewError && (
+                <div style={{ position: 'fixed', top: '1.5rem', left: '50%', transform: 'translateX(-50%)', zIndex: 99999, background: 'rgba(239,68,68,0.95)', color: '#fff', borderRadius: '12px', padding: '0.75rem 1.25rem', display: 'flex', alignItems: 'center', gap: '0.75rem', boxShadow: '0 4px 20px rgba(0,0,0,0.3)', maxWidth: '90vw' }}>
+                    <AlertCircle size={16} style={{ flexShrink: 0 }} />
+                    <span className="mono" style={{ fontSize: '0.7rem' }}>{previewError}</span>
+                    <button type="button" onClick={() => setPreviewError(null)} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', padding: '0 0.25rem', marginLeft: '0.25rem' }}><XCircle size={14} /></button>
+                </div>
+            )}
+
             {/* --- Document Preview Modal --- */}
             {previewUrl && (
                 <div className="doc-preview-overlay" style={{ zIndex: 99999 }} onClick={() => setPreviewUrl(null)}>
@@ -440,7 +451,13 @@ export default function TrackApplication() {
                         </div>
                         <div className="doc-preview-body">
                             <object data={previewUrl} type="application/pdf" width="100%" height="100%" aria-label={previewName}>
-                                <iframe src={previewUrl} title={previewName} width="100%" height="100%" style={{ border: 'none' }} />
+                                <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1rem', padding: '2rem', textAlign: 'center' }}>
+                                    <FileText size={48} style={{ color: 'var(--accent)', opacity: 0.6 }} />
+                                    <p className="mono" style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Tu navegador no puede mostrar la vista previa.</p>
+                                    <a className="btn-magnetic" href={previewUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+                                        <ExternalLink size={14} /> Abrir documento
+                                    </a>
+                                </div>
                             </object>
                         </div>
                     </div>
