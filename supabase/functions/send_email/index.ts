@@ -178,6 +178,19 @@ serve(async (req: Request) => {
       return jsonResponse({ ok: true, message: "Email already sent, skipping to prevent loop." });
     }
 
+    // Re-verificar estado actual en BD (para registros manuales que marcan 'sent' en la misma transacción)
+    if (isWebhook && payload.record.id) {
+      const admin = getAdminClient();
+      const { data: currentLog } = await admin
+        .from('recruit_message_logs')
+        .select('status')
+        .eq('id', payload.record.id)
+        .single();
+      if (currentLog?.status === 'sent') {
+        return jsonResponse({ ok: true, message: "Email suppressed: already marked as sent." });
+      }
+    }
+
     const applicationId = (isWebhook ? payload.record.application_id : payload.application_id) as string;
     const templateKey = (isWebhook ? null : payload.template_key) as string | null;
     const templateId = (isWebhook ? payload.record.template_id : null) as string | null;

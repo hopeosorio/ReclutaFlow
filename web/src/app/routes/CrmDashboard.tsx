@@ -31,8 +31,9 @@ const STATUS_GROUPS: { label: string; keys: string[] }[] = [
   { label: 'Entrevista',    keys: ['virtual_scheduled','virtual_done'] },
   { label: 'Documentación', keys: ['documents_pending','documents_complete'] },
   { label: 'Onboarding',    keys: ['onboarding','onboarding_scheduled'] },
-  { label: 'Contratado',    keys: ['hired'] },
-  { label: 'Descartado',    keys: ['rejected'] },
+  { label: 'Contratado',     keys: ['hired'] },
+  { label: 'Descartado',     keys: ['rejected'] },
+  { label: 'Descontratado',  keys: ['terminated'] },
 ];
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -68,7 +69,7 @@ export default function CrmDashboard() {
   const [jobs, setJobs] = useState<JobRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("Nuevos");
   const [jobFilter, setJobFilter] = useState("");
   const [recruiterFilter, setRecruiterFilter] = useState("");
   const [search, setSearch] = useState("");
@@ -155,16 +156,12 @@ export default function CrmDashboard() {
     return () => { supabase.removeChannel(channel); };
   }, [profile, toast]);
 
-  const TERMINAL_STATUSES = ['hired', 'rejected'];
-
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
     const groupKeys = statusFilter
       ? STATUS_GROUPS.find(g => g.label === statusFilter)?.keys ?? []
       : [];
     return applications.filter(app => {
-      // Ocultar terminales por defecto, a menos que se filtre explícitamente por ese grupo
-      if (!statusFilter && TERMINAL_STATUSES.includes(app.status_key)) return false;
       if (statusFilter && !groupKeys.includes(app.status_key)) return false;
       if (jobFilter && app.recruit_job_postings?.id !== jobFilter) return false;
       if (recruiterFilter) {
@@ -183,8 +180,9 @@ export default function CrmDashboard() {
   useEffect(() => { setVisibleCount(PAGE_SIZE); }, [statusFilter, jobFilter, recruiterFilter, search]);
 
   const kpis = useMemo(() => {
+    const terminalStatuses = ['hired', 'rejected', 'terminated'];
     const weekStart = new Date(); weekStart.setDate(weekStart.getDate() - 7); weekStart.setHours(0,0,0,0);
-    const active = applications.filter(a => !TERMINAL_STATUSES.includes(a.status_key)).length;
+    const active = applications.filter(a => !terminalStatuses.includes(a.status_key)).length;
     const thisWeek = applications.filter(a => new Date(a.submitted_at) >= weekStart).length;
     const critical = applications.filter(a => a.traffic_light === "red").length;
     const withDays = applications.filter(a => a.submitted_at && a.updated_at);

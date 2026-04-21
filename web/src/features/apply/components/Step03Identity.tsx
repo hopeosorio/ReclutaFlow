@@ -215,7 +215,7 @@ export default function Step03Identity({ register, watch, setValue, errors, ques
             id="years_exp_input"
             className="glass-input compact"
             type="number"
-            placeholder="0"
+            placeholder={hasExperience === "true" ? "0" : ""}
             onInput={(e: any) => e.target.value = e.target.value.replace(/[^0-9]/g, '')}
             disabled={hasExperience !== "true"}
             style={{ opacity: hasExperience === "true" ? 1 : 0.3 }}
@@ -252,7 +252,7 @@ export default function Step03Identity({ register, watch, setValue, errors, ques
           <input
             id="fixed_comm_input"
             className="glass-input compact"
-            placeholder="¿CUÁL?"
+            placeholder={fixedCommitment === "true" ? "¿CUÁL?" : ""}
             disabled={fixedCommitment !== "true"}
             style={{ opacity: fixedCommitment === "true" ? 1 : 0.3 }}
             {...register("application_details.fixed_commitment", { required: fixedCommitment === "true" })}
@@ -393,7 +393,7 @@ export default function Step03Identity({ register, watch, setValue, errors, ques
         <input
           id="prev_reason_input"
           className="glass-input compact"
-          placeholder="MOTIVO DE RETIRO"
+          placeholder={previousEmployee === "true" ? "MOTIVO DE RETIRO" : ""}
           disabled={previousEmployee !== "true"}
           style={{ opacity: previousEmployee === "true" ? 1 : 0.3 }}
           {...register("application_details.previous_employee_reason", { required: previousEmployee === "true" })}
@@ -458,7 +458,7 @@ export default function Step03Identity({ register, watch, setValue, errors, ques
         <input
           id="health_adj_input"
           className="glass-input compact"
-          placeholder="DESCRIBA EL AJUSTE SUGERIDO"
+          placeholder={adjustmentsRequired === "true" ? "DESCRIBA EL AJUSTE SUGERIDO" : ""}
           disabled={adjustmentsRequired !== "true"}
           style={{ opacity: adjustmentsRequired === "true" ? 1 : 0.3 }}
           {...register("application_details.health_adjustments", { required: adjustmentsRequired === "true" })}
@@ -477,33 +477,6 @@ export default function Step03Identity({ register, watch, setValue, errors, ques
         <textarea className="glass-input compact" style={{ height: '80px', resize: 'none' }} {...register("application_details.comments")} />
       </div>
 
-      {/* Condicional para mostrar el botón de vista previa solo si se han llenado los campos clave */}
-      {personWatch.birth_date && personWatch.address_line1 && personWatch.phone && personWatch.email &&
-        candidateWatch.education_level && appWatch.has_experience && appWatch.fixed_commitment_bool &&
-        appWatch.weekend_availability && appWatch.previous_employee && appWatch.has_infonavit &&
-        appWatch.start_date && appWatch.adjustments_required && (
-          <div className="flex-center mt-12 mb-6">
-            <button
-              type="button"
-              className="btn-ghost scale-up"
-              style={{
-                padding: '1.2rem 3rem',
-                borderRadius: 'var(--radius-pill)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '1rem',
-                border: '2px solid var(--accent)',
-                background: 'rgba(61,90,254,0.1)',
-                color: 'var(--accent)',
-                fontWeight: 800,
-                boxShadow: '0 0 20px rgba(61,90,254,0.2)'
-              }}
-              onClick={() => typeof (window as any).previewJobApplication === 'function' && (window as any).previewJobApplication()}
-            >
-              <Check size={18} /> <span className="mono">VER VISTA PREVIA DE SOLICITUD</span>
-            </button>
-          </div>
-        )}
 
       {/* 5. CUESTIONARIO DINÁMICO (POST-SOLICITUD) */}
       {questions.length > 0 && (

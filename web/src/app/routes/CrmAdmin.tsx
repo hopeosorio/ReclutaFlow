@@ -129,6 +129,7 @@ interface OnboardingHostRow {
 
 interface HiredApplicationRow {
   id: string;
+  status_key: string;
   updated_at: string;
   traffic_light: "red" | "yellow" | "green" | null;
   recruit_candidates: {
@@ -136,7 +137,22 @@ interface HiredApplicationRow {
     recruit_persons: { id: string; first_name: string; last_name: string; email: string | null; phone: string | null; } | null;
   } | null;
   recruit_job_postings: { title: string; branch: string | null; } | null;
+  recruit_application_status_history: { status_key: string; changed_at: string; }[];
   rehire_flag?: { color: "red" | "yellow" | "green"; reason: string; set_at: string; } | null;
+}
+
+function formatTenure(startStr: string, endStr: string | null): string {
+  const start = new Date(startStr);
+  const end = endStr ? new Date(endStr) : new Date();
+  const totalDays = Math.floor((end.getTime() - start.getTime()) / 86400000);
+  const years = Math.floor(totalDays / 365);
+  const months = Math.floor((totalDays % 365) / 30);
+  const days = totalDays % 30;
+  const parts = [];
+  if (years > 0) parts.push(`${years} año${years !== 1 ? 's' : ''}`);
+  if (months > 0) parts.push(`${months} mes${months !== 1 ? 'es' : ''}`);
+  if (days > 0 || parts.length === 0) parts.push(`${days} día${days !== 1 ? 's' : ''}`);
+  return parts.join(', ');
 }
 
 const tabs = [
@@ -317,6 +333,12 @@ export default function CrmAdmin() {
   const [descontratarSaving, setDescontratarSaving] = useState(false);
   const [descontratarError, setDescontratarError] = useState<string | null>(null);
 
+  const today = new Date().toISOString().split('T')[0];
+  const [showAddEmployee, setShowAddEmployee] = useState(false);
+  const [addEmployeeForm, setAddEmployeeForm] = useState({ first_name: '', last_name: '', email: '', phone: '', job_posting_id: '', hired_at: today });
+  const [addEmployeeSaving, setAddEmployeeSaving] = useState(false);
+  const [addEmployeeError, setAddEmployeeError] = useState<string | null>(null);
+
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [metricSummary, setMetricSummary] = useState<{ statusChanged: number; emailSent: number; emailFailed: number; statusBreakdown: unknown[] }>({ statusChanged: 0, emailSent: 0, emailFailed: 0, statusBreakdown: [] });
@@ -447,8 +469,8 @@ export default function CrmAdmin() {
         .order("full_name"),
       supabase
         .from("recruit_applications")
-        .select("id, updated_at, traffic_light, recruit_candidates(person_id, recruit_persons(id, first_name, last_name, email, phone)), recruit_job_postings(title, branch)")
-        .eq("status_key", "hired")
+        .select("id, status_key, updated_at, traffic_light, recruit_candidates(person_id, recruit_persons(id, first_name, last_name, email, phone)), recruit_job_postings(title, branch), recruit_application_status_history(status_key, changed_at)")
+        .in("status_key", ["hired", "terminated"])
         .order("updated_at", { ascending: false }),
       supabase
         .from("recruit_rehire_flags")
@@ -1188,6 +1210,36 @@ export default function CrmAdmin() {
     await loadAll();
   };
 
+  const handleAddEmployee = async (e: FormEvent) => {
+    e.preventDefault();
+    setAddEmployeeError(null);
+    const f = addEmployeeForm;
+    if (!f.first_name.trim() || !f.last_name.trim() || !f.job_posting_id) {
+      setAddEmployeeError("Nombre, apellido y vacante son obligatorios.");
+      return;
+    }
+    setAddEmployeeSaving(true);
+    try {
+      const { error } = await supabase.rpc('register_existing_employee', {
+        p_first_name: f.first_name.trim(),
+        p_last_name: f.last_name.trim(),
+        p_email: f.email.trim(),
+        p_phone: f.phone.trim(),
+        p_job_posting_id: f.job_posting_id,
+        p_hired_at: new Date(f.hired_at + 'T12:00:00').toISOString(),
+        p_assigned_to: profile?.id ?? null,
+      });
+      if (error) throw error;
+
+      setShowAddEmployee(false);
+      setAddEmployeeForm({ first_name: '', last_name: '', email: '', phone: '', job_posting_id: '', hired_at: today });
+      await loadAll();
+    } catch (err: any) {
+      setAddEmployeeError(err.message);
+    }
+    setAddEmployeeSaving(false);
+  };
+
   const handleDescontratar = async (e: FormEvent) => {
     e.preventDefault();
     setDescontratarError(null);
@@ -1199,12 +1251,23 @@ export default function CrmAdmin() {
     const personId = app?.recruit_candidates?.person_id;
     if (!personId) { setDescontratarError("No se encontró el perfil del empleado."); return; }
     setDescontratarSaving(true);
+    // 1. Guardar semáforo de recontratación
     await supabase.from("recruit_rehire_flags").delete().eq("person_id", personId);
     const { error } = await supabase
       .from("recruit_rehire_flags")
       .insert({ person_id: personId, color: descontratarForm.color, reason: descontratarForm.reason.trim(), set_by: profile?.id });
+    if (error) { setDescontratarSaving(false); setDescontratarError(error.message); return; }
+    // 2. Cambiar estatus a terminated via edge function
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
+    if (token && descontratarId) {
+      await fetch(`${supabaseUrl}/functions/v1/change_status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}`, "apikey": supabaseAnonKey! },
+        body: JSON.stringify({ application_id: descontratarId, status_key: "terminated", reason: descontratarForm.reason.trim() }),
+      });
+    }
     setDescontratarSaving(false);
-    if (error) { setDescontratarError(error.message); return; }
     setDescontratarId(null);
     setDescontratarForm({ color: "green", reason: "" });
     await loadAll();
@@ -2427,133 +2490,201 @@ export default function CrmAdmin() {
               <p style={{ opacity: 0.6, fontSize: '0.8rem', marginBottom: '1.2rem' }}>
                 Historial de contrataciones. Al descontratar, registra el semáforo de recontratación para futuras postulaciones.
               </p>
-              <input
-                className="input"
-                placeholder="Buscar por nombre, puesto o sucursal..."
-                value={hiredSearch}
-                onChange={e => setHiredSearch(e.target.value)}
-                style={{ maxWidth: 380 }}
-              />
+              <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                  className="input"
+                  placeholder="Buscar por nombre, puesto o sucursal..."
+                  value={hiredSearch}
+                  onChange={e => setHiredSearch(e.target.value)}
+                  style={{ maxWidth: 340 }}
+                />
+                <button
+                  className="btn-primary"
+                  type="button"
+                  onClick={() => setShowAddEmployee(p => !p)}
+                  style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', fontWeight: 800, borderRadius: '12px', whiteSpace: 'nowrap' }}
+                >
+                  {showAddEmployee ? '✕ CANCELAR' : '+ REGISTRAR EMPLEADO EXISTENTE'}
+                </button>
+              </div>
+
+              {showAddEmployee && (
+                <form onSubmit={handleAddEmployee} style={{ marginTop: '1.5rem', padding: '1.5rem', border: '1px solid var(--accent)', borderRadius: '16px', background: 'rgba(61,90,254,0.03)', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                  <p className="mono" style={{ fontSize: '0.6rem', fontWeight: 800, margin: 0, opacity: 0.6 }}>// REGISTRAR EMPLEADO EXISTENTE</p>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                    <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>NOMBRE(S) *
+                      <input className="input" style={{ marginTop: '0.4rem' }} value={addEmployeeForm.first_name} onChange={e => setAddEmployeeForm(p => ({ ...p, first_name: e.target.value }))} placeholder="Ej: César" required />
+                    </label>
+                    <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>APELLIDO(S) *
+                      <input className="input" style={{ marginTop: '0.4rem' }} value={addEmployeeForm.last_name} onChange={e => setAddEmployeeForm(p => ({ ...p, last_name: e.target.value }))} placeholder="Ej: Osorio Hernández" required />
+                    </label>
+                    <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>CORREO ELECTRÓNICO
+                      <input className="input" type="email" style={{ marginTop: '0.4rem' }} value={addEmployeeForm.email} onChange={e => setAddEmployeeForm(p => ({ ...p, email: e.target.value }))} placeholder="correo@ejemplo.com" />
+                    </label>
+                    <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>TELÉFONO
+                      <input className="input" style={{ marginTop: '0.4rem' }} value={addEmployeeForm.phone} onChange={e => setAddEmployeeForm(p => ({ ...p, phone: e.target.value }))} placeholder="55 1234 5678" />
+                    </label>
+                    <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>VACANTE / PUESTO *
+                      <select className="input" style={{ marginTop: '0.4rem' }} value={addEmployeeForm.job_posting_id} onChange={e => setAddEmployeeForm(p => ({ ...p, job_posting_id: e.target.value }))} required>
+                        <option value="">— Seleccionar vacante —</option>
+                        {jobs.map(j => <option key={j.id} value={j.id}>{j.title}{j.branch ? ` · ${j.branch}` : ''}</option>)}
+                      </select>
+                    </label>
+                    <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>FECHA DE CONTRATACIÓN *
+                      <input className="input" type="date" style={{ marginTop: '0.4rem' }} value={addEmployeeForm.hired_at} onChange={e => setAddEmployeeForm(p => ({ ...p, hired_at: e.target.value }))} max={today} required />
+                    </label>
+                  </div>
+                  {addEmployeeError && <p className="error">{addEmployeeError}</p>}
+                  <button className="btn-primary" type="submit" disabled={addEmployeeSaving} style={{ alignSelf: 'flex-end', padding: '0.8rem 2rem', fontWeight: 800 }}>
+                    {addEmployeeSaving ? 'REGISTRANDO...' : 'CONFIRMAR REGISTRO'}
+                  </button>
+                </form>
+              )}
             </div>
             {(() => {
               const q = hiredSearch.trim().toLowerCase();
               const filtered = q
                 ? hiredApps.filter(app => {
-                    const p = app.recruit_candidates?.recruit_persons;
-                    return (
-                      `${p?.first_name ?? ''} ${p?.last_name ?? ''}`.toLowerCase().includes(q) ||
-                      (app.recruit_job_postings?.title ?? '').toLowerCase().includes(q) ||
-                      (app.recruit_job_postings?.branch ?? '').toLowerCase().includes(q)
-                    );
-                  })
+                  const p = app.recruit_candidates?.recruit_persons;
+                  return (
+                    `${p?.first_name ?? ''} ${p?.last_name ?? ''}`.toLowerCase().includes(q) ||
+                    (app.recruit_job_postings?.title ?? '').toLowerCase().includes(q) ||
+                    (app.recruit_job_postings?.branch ?? '').toLowerCase().includes(q)
+                  );
+                })
                 : hiredApps;
               return filtered.length === 0 ? (
                 <div className="card"><p style={{ opacity: 0.5, fontSize: '0.8rem' }}>{q ? 'Sin resultados para esa búsqueda.' : 'Sin empleados contratados aún.'}</p></div>
               ) : (
-              <div className="table">
-                <div className="table-row table-head table-row--admin">
-                  <span>Empleado</span>
-                  <span>Puesto</span>
-                  <span>Fecha contratación</span>
-                  <span>Semáforo salida</span>
-                  <span></span>
-                </div>
-                {filtered.map(app => {
-                  const person = app.recruit_candidates?.recruit_persons;
-                  const isOpen = descontratarId === app.id;
-                  const flagColor = app.rehire_flag?.color;
-                  const flagColors = { green: { bg: '#22c55e', label: 'PUEDE RECONTRATARSE' }, yellow: { bg: '#eab308', label: 'REVISAR ANTES DE CONTRATAR' }, red: { bg: '#ef4444', label: 'NO RECONTRATAR' } } as const;
-                  return (
-                    <div key={app.id} style={{ borderBottom: '1px solid var(--border-light)' }}>
-                      <div className="table-row table-row--admin">
-                        <span className="table-primary">
-                          <Link to={`/crm/applications/${app.id}`} style={{ color: 'inherit', textDecoration: 'none' }}>
-                            <strong style={{ borderBottom: '1px dashed var(--accent)', cursor: 'pointer' }}>
-                              {person ? `${person.first_name} ${person.last_name}` : '—'}
-                            </strong>
-                          </Link>
-                          <small>{person?.email ?? ''}</small>
-                        </span>
-                        <span>
-                          <strong>{app.recruit_job_postings?.title ?? '—'}</strong>
-                          <small style={{ display: 'block', opacity: 0.6 }}>{app.recruit_job_postings?.branch ?? ''}</small>
-                        </span>
-                        <span style={{ fontSize: '0.75rem', opacity: 0.7 }}>
-                          {new Intl.DateTimeFormat('es-MX', { dateStyle: 'medium', timeZone: 'America/Mexico_City' }).format(new Date(app.updated_at))}
-                        </span>
-                        <span>
-                          {flagColor ? (
-                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.65rem', fontWeight: 800, padding: '0.3rem 0.8rem', borderRadius: '20px', background: `${flagColors[flagColor]?.bg}22`, color: flagColors[flagColor]?.bg }}>
-                              <span style={{ width: 8, height: 8, borderRadius: '50%', background: flagColors[flagColor]?.bg, display: 'inline-block' }} />
-                              {flagColors[flagColor]?.label}
-                            </span>
-                          ) : (
-                            <span style={{ opacity: 0.35, fontSize: '0.75rem' }}>Activo</span>
-                          )}
-                        </span>
-                        <span>
-                          {!flagColor && (
-                            <button
-                              className="btn-ghost"
-                              type="button"
-                              onClick={() => { setDescontratarId(isOpen ? null : app.id); setDescontratarError(null); setDescontratarForm({ color: 'green', reason: '' }); }}
-                              style={{ fontSize: '0.7rem', color: isOpen ? 'var(--text-muted)' : 'var(--danger)', borderColor: isOpen ? 'var(--border-light)' : 'var(--danger)' }}
-                            >
-                              {isOpen ? 'CANCELAR' : 'DESCONTRATAR'}
-                            </button>
-                          )}
-                        </span>
-                      </div>
+                <>
+                  <div style={{ display: 'flex', gap: '0.6rem', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '0.65rem', fontWeight: 800, padding: '0.3rem 0.9rem', borderRadius: '20px', background: 'rgba(34,197,94,0.1)', color: '#22c55e' }}>
+                      ● {filtered.filter(a => a.status_key === 'hired').length} ACTIVOS
+                    </span>
+                    <span style={{ fontSize: '0.65rem', fontWeight: 800, padding: '0.3rem 0.9rem', borderRadius: '20px', background: 'rgba(239,68,68,0.08)', color: '#ef4444' }}>
+                      ● {filtered.filter(a => a.status_key === 'terminated').length} BAJAS
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
+                    {filtered.map(app => {
+                      const person = app.recruit_candidates?.recruit_persons;
+                      const isOpen = descontratarId === app.id;
+                      const flagColor = app.rehire_flag?.color;
+                      const flagColors = { green: { bg: '#22c55e', label: 'PUEDE RECONTRATARSE' }, yellow: { bg: '#eab308', label: 'REVISAR ANTES DE CONTRATAR' }, red: { bg: '#ef4444', label: 'NO RECONTRATAR' } } as const;
+                      const isTerminated = app.status_key === 'terminated';
+                      const history = app.recruit_application_status_history ?? [];
+                      const hiredAt = history.find(h => h.status_key === 'hired')?.changed_at ?? null;
+                      const terminatedAt = history.find(h => h.status_key === 'terminated')?.changed_at ?? null;
+                      const tenure = hiredAt ? formatTenure(hiredAt, terminatedAt) : null;
+                      const fmtDate = (d: string) => new Intl.DateTimeFormat('es-MX', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'America/Mexico_City' }).format(new Date(d));
+                      const initials = person ? `${person.first_name[0]}${person.last_name[0]}`.toUpperCase() : '??';
+                      return (
+                        <div key={app.id} style={{ border: `1px solid ${isTerminated ? 'rgba(239,68,68,0.15)' : 'var(--border-light)'}`, borderRadius: '16px', overflow: 'hidden', background: isTerminated ? 'rgba(239,68,68,0.02)' : 'var(--bg-card)', transition: 'opacity 0.2s', opacity: isTerminated ? 0.75 : 1 }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '1.5rem', padding: '1.2rem 1.5rem', alignItems: 'center' }}>
 
-                      {/* ── Formulario de salida ── */}
-                      {isOpen && (
-                        <div style={{ padding: '1.5rem 2rem', background: 'var(--bg-accent)', borderTop: '1px solid var(--border-light)' }}>
-                          <form onSubmit={handleDescontratar} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                            <p className="mono" style={{ fontSize: '0.6rem', fontWeight: 800, margin: 0, opacity: 0.6 }}>// REGISTRAR SALIDA — {person?.first_name} {person?.last_name}</p>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '1rem' }}>
-                              <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>SEMÁFORO DE RECONTRATACIÓN
-                                <div style={{ display: 'flex', gap: '0.8rem', marginTop: '0.8rem', alignItems: 'center' }}>
-                                  {(['green', 'yellow', 'red'] as const).map(c => (
-                                    <button
-                                      key={c}
-                                      type="button"
-                                      onClick={() => setDescontratarForm(p => ({ ...p, color: c }))}
-                                      title={c === 'green' ? 'Recontratable' : c === 'yellow' ? 'A criterio' : 'No recontratar'}
-                                      style={{
-                                        width: 36, height: 36, borderRadius: '50%',
-                                        border: `3px solid ${descontratarForm.color === c ? flagColors[c].bg : 'transparent'}`,
-                                        background: flagColors[c].bg,
-                                        cursor: 'pointer',
-                                        opacity: descontratarForm.color === c ? 1 : 0.35,
-                                        transition: 'opacity 0.15s, border-color 0.15s',
-                                        flexShrink: 0,
-                                      }}
-                                    />
-                                  ))}
+                            {/* Empleado */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.9rem', minWidth: 0 }}>
+                              <div style={{ width: 40, height: 40, borderRadius: '50%', background: isTerminated ? 'rgba(239,68,68,0.12)' : 'rgba(61,90,254,0.1)', color: isTerminated ? '#ef4444' : 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: '0.75rem', flexShrink: 0 }}>
+                                {initials}
+                              </div>
+                              <div style={{ minWidth: 0 }}>
+                                <Link to={`/crm/applications/${app.id}`} style={{ color: 'inherit', textDecoration: 'none' }}>
+                                  <div style={{ fontWeight: 800, fontSize: '0.85rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', borderBottom: '1px dashed var(--accent)' }}>
+                                    {person ? `${person.first_name} ${person.last_name}` : '—'}
+                                  </div>
+                                </Link>
+                                <div className="mono" style={{ fontSize: '0.6rem', opacity: 0.5, marginTop: '0.15rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{person?.email ?? ''}</div>
+                                <div style={{ marginTop: '0.4rem' }}>
+                                  <span style={{ fontSize: '0.6rem', fontWeight: 800, padding: '0.15rem 0.6rem', borderRadius: '10px', background: isTerminated ? 'rgba(239,68,68,0.1)' : 'rgba(34,197,94,0.1)', color: isTerminated ? '#ef4444' : '#22c55e' }}>
+                                    {isTerminated ? '● BAJA' : '● ACTIVO'}
+                                  </span>
                                 </div>
-                              </label>
-                              <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>MOTIVO DE SALIDA *
-                                <textarea
-                                  className="input"
-                                  placeholder="Describe el motivo de la baja: renuncia voluntaria, término de contrato, desempeño, etc."
-                                  value={descontratarForm.reason}
-                                  onChange={e => setDescontratarForm(p => ({ ...p, reason: e.target.value }))}
-                                  style={{ marginTop: '0.5rem', minHeight: '70px' }}
-                                  required
-                                />
-                              </label>
+                              </div>
                             </div>
-                            {descontratarError && <p className="error">{descontratarError}</p>}
-                            <button className="btn-primary" type="submit" disabled={descontratarSaving} style={{ alignSelf: 'flex-end', padding: '0.8rem 2rem', fontWeight: 800 }}>
-                              {descontratarSaving ? 'REGISTRANDO...' : 'CONFIRMAR SALIDA'}
-                            </button>
-                          </form>
+
+                            {/* Puesto + antigüedad */}
+                            <div>
+                              <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{app.recruit_job_postings?.title ?? '—'}</div>
+                              <div style={{ fontSize: '0.65rem', opacity: 0.55, marginTop: '0.15rem' }}>{app.recruit_job_postings?.branch ?? ''}</div>
+                              {tenure && (
+                                <div style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.1rem' }}>
+                                  <div className="mono" style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--accent)' }}>⏱ {tenure}</div>
+                                  {hiredAt && <div className="mono" style={{ fontSize: '0.55rem', opacity: 0.45 }}>Ingreso: {fmtDate(hiredAt)}{terminatedAt ? ` · Baja: ${fmtDate(terminatedAt)}` : ''}</div>}
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Acciones + semáforo */}
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.5rem' }}>
+                              {flagColor ? (
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.6rem', fontWeight: 800, padding: '0.3rem 0.8rem', borderRadius: '20px', background: `${flagColors[flagColor].bg}22`, color: flagColors[flagColor].bg, whiteSpace: 'nowrap' }}>
+                                  <span style={{ width: 7, height: 7, borderRadius: '50%', background: flagColors[flagColor].bg, display: 'inline-block' }} />
+                                  {flagColors[flagColor].label}
+                                </span>
+                              ) : null}
+                              {!isTerminated && (
+                                <button
+                                  className="btn-ghost"
+                                  type="button"
+                                  onClick={() => { setDescontratarId(isOpen ? null : app.id); setDescontratarError(null); setDescontratarForm({ color: 'green', reason: '' }); }}
+                                  style={{ fontSize: '0.65rem', color: isOpen ? 'var(--text-muted)' : 'var(--danger)', borderColor: isOpen ? 'var(--border-light)' : 'var(--danger)', whiteSpace: 'nowrap' }}
+                                >
+                                  {isOpen ? 'CANCELAR' : 'DESCONTRATAR'}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* ── Formulario de salida ── */}
+                          {isOpen && (
+                            <div style={{ padding: '1.5rem 2rem', background: 'var(--bg-accent)', borderTop: '1px solid var(--border-light)' }}>
+                              <form onSubmit={handleDescontratar} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                                <p className="mono" style={{ fontSize: '0.6rem', fontWeight: 800, margin: 0, opacity: 0.6 }}>// REGISTRAR SALIDA — {person?.first_name} {person?.last_name}</p>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '1rem' }}>
+                                  <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>SEMÁFORO DE RECONTRATACIÓN
+                                    <div style={{ display: 'flex', gap: '0.8rem', marginTop: '0.8rem', alignItems: 'center' }}>
+                                      {(['green', 'yellow', 'red'] as const).map(c => (
+                                        <button
+                                          key={c}
+                                          type="button"
+                                          onClick={() => setDescontratarForm(p => ({ ...p, color: c }))}
+                                          title={c === 'green' ? 'Recontratable' : c === 'yellow' ? 'A criterio' : 'No recontratar'}
+                                          style={{
+                                            width: 36, height: 36, borderRadius: '50%',
+                                            border: `3px solid ${descontratarForm.color === c ? flagColors[c].bg : 'transparent'}`,
+                                            background: flagColors[c].bg,
+                                            cursor: 'pointer',
+                                            opacity: descontratarForm.color === c ? 1 : 0.35,
+                                            transition: 'opacity 0.15s, border-color 0.15s',
+                                            flexShrink: 0,
+                                          }}
+                                        />
+                                      ))}
+                                    </div>
+                                  </label>
+                                  <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>MOTIVO DE SALIDA *
+                                    <textarea
+                                      className="input"
+                                      placeholder="Describe el motivo de la baja: renuncia voluntaria, término de contrato, desempeño, etc."
+                                      value={descontratarForm.reason}
+                                      onChange={e => setDescontratarForm(p => ({ ...p, reason: e.target.value }))}
+                                      style={{ marginTop: '0.5rem', minHeight: '70px' }}
+                                      required
+                                    />
+                                  </label>
+                                </div>
+                                {descontratarError && <p className="error">{descontratarError}</p>}
+                                <button className="btn-primary" type="submit" disabled={descontratarSaving} style={{ alignSelf: 'flex-end', padding: '0.8rem 2rem', fontWeight: 800 }}>
+                                  {descontratarSaving ? 'REGISTRANDO...' : 'CONFIRMAR SALIDA'}
+                                </button>
+                              </form>
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+                      );
+                    })}
+                  </div>
+                </>
               );
             })()}
           </div>
@@ -2849,7 +2980,7 @@ export default function CrmAdmin() {
                 <small>Total registrados</small>
               </div>
               <div className="card metric-card">
-                <span>Correos enviandos</span>
+                <span>Correos enviados</span>
                 <strong>{metricSummary.emailSent}</strong>
                 <small>Enviados con éxito</small>
               </div>
@@ -2864,13 +2995,13 @@ export default function CrmAdmin() {
             <div className="card">
               <h4>Estado del Pipeline</h4>
               <p className="helper">Conteo de candidatos activos por fase del proceso.</p>
-              <div className="status-stats-grid">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '1rem' }}>
                 {(metricSummary as any).statusBreakdown?.map((item: any) => {
                   const label = statusLabelMap[item.status_key]?.label || item.status_key;
                   return (
-                    <div className="status-stat-item" key={item.status_key}>
-                      <span className="status-stat-label">{label}</span>
-                      <span className="status-stat-count">{item.count}</span>
+                    <div key={item.status_key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.5rem 0.8rem', borderRadius: '8px', background: 'var(--bg-accent)', border: '1px solid var(--border-light)' }}>
+                      <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-main)' }}>{label}</span>
+                      <span style={{ fontSize: '0.75rem', fontWeight: 900, color: 'var(--accent)', minWidth: '2rem', textAlign: 'right' }}>{item.count}</span>
                     </div>
                   );
                 })}
