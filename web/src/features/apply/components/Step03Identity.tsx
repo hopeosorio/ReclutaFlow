@@ -1,4 +1,3 @@
-import { Check } from "lucide-react";
 import { useEffect } from "react";
 import type { UseFormRegister, FieldErrors, UseFormSetValue } from "react-hook-form";
 import type { ApplyFormValues, ScreeningQuestion } from "../types";
@@ -23,8 +22,6 @@ interface Step03IdentityProps {
 export default function Step03Identity({ register, watch, setValue, errors, questions }: Step03IdentityProps) {
 
   // Observadores para visibilidad condicional y limpieza
-  const personWatch = watch("person");
-  const candidateWatch = watch("candidate");
   const appWatch = watch("application_details");
   const skillsWatch = watch("skills");
 
