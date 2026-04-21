@@ -154,8 +154,6 @@ export default function TrackApplication() {
     const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({});
     const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
     const [dragOver, setDragOver] = useState<string | null>(null);
-    const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-    const [previewName, setPreviewName] = useState<string>("");
     const [previewError, setPreviewError] = useState<string | null>(null);
 
     const fetchApplication = async () => {
@@ -343,7 +341,7 @@ export default function TrackApplication() {
         if (file) handleUpload(docTypeId, file);
     };
 
-    const handleDocumentPreview = async (path: string, name: string) => {
+    const handleDocumentPreview = async (path: string, _name: string) => {
         setPreviewError(null);
         try {
             const { data, error } = await supabase.storage
@@ -351,10 +349,9 @@ export default function TrackApplication() {
                 .createSignedUrl(path, 3600);
 
             if (error) throw error;
-            setPreviewName(name);
-            setPreviewUrl(data.signedUrl);
+            window.open(data.signedUrl, "_blank", "noopener,noreferrer");
         } catch (_err) {
-            setPreviewError("No se pudo cargar la vista previa del documento. Intenta de nuevo.");
+            setPreviewError("No se pudo cargar el documento. Intenta de nuevo.");
         }
     };
 
@@ -438,31 +435,6 @@ export default function TrackApplication() {
                 </div>
             )}
 
-            {/* --- Document Preview Modal --- */}
-            {previewUrl && (
-                <div className="doc-preview-overlay" style={{ zIndex: 99999 }} onClick={() => setPreviewUrl(null)}>
-                    <div className="doc-preview-modal" onClick={(e) => e.stopPropagation()}>
-                        <div className="doc-preview-header">
-                            <strong>{previewName}</strong>
-                            <div style={{ display: 'flex', gap: '0.5rem' }}>
-                                <a className="btn-ghost" href={previewUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}><ExternalLink size={12} /> Abrir en nueva pestaña</a>
-                                <button className="btn-ghost" type="button" style={{ fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }} onClick={() => setPreviewUrl(null)}><XCircle size={12} /> Cerrar</button>
-                            </div>
-                        </div>
-                        <div className="doc-preview-body">
-                            <object data={previewUrl} type="application/pdf" width="100%" height="100%" aria-label={previewName}>
-                                <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1rem', padding: '2rem', textAlign: 'center' }}>
-                                    <FileText size={48} style={{ color: 'var(--accent)', opacity: 0.6 }} />
-                                    <p className="mono" style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Tu navegador no puede mostrar la vista previa.</p>
-                                    <a className="btn-magnetic" href={previewUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                                        <ExternalLink size={14} /> Abrir documento
-                                    </a>
-                                </div>
-                            </object>
-                        </div>
-                    </div>
-                </div>
-            )}
 
             <div className="animate-in fade-in duration-1000" style={{ maxWidth: '1200px', margin: '0 auto', padding: '0 2rem', position: 'relative', zIndex: 10 }}>
 
