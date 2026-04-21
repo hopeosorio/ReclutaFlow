@@ -522,7 +522,7 @@ export default function TrackApplication() {
                             gap: '1rem',
                             position: 'relative'
                         }}>
-                                {/* Número como watermark de fondo */}
+                            {/* Número como watermark de fondo */}
                             <span style={{
                                 position: 'absolute',
                                 bottom: '-0.15em',
@@ -861,7 +861,7 @@ export default function TrackApplication() {
 
             <div style={{ marginTop: '5rem', textAlign: 'center', opacity: 0.3 }}>
                 <p className="mono" style={{ fontSize: '0.6rem', letterSpacing: '0.4rem', color: 'var(--text-dim)' }}>
-                    ELITE CORE v5.0 // SESSION_SECURE_{new Date().getFullYear()}
+                    RECLUTAFLOW
                 </p>
             </div>
 
