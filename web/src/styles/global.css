@@ -2811,7 +2811,6 @@ textarea.input {
   .kpi-strip,
   .filters,
   .pipeline-load-more,
-  .preview-trigger,
   .doc-preview-overlay,
   .interview-date-filter,
   nav,
@@ -3460,5 +3459,11 @@ textarea.input {
 
   .nav-pixel a span {
     display: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .preview-trigger {
+    display: none !important;
   }
 }
