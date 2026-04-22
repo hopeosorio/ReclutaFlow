@@ -15,7 +15,7 @@ interface SlotCalendarV2Props {
 export default function SlotCalendarV2({ slots, onChange, error, occupiedSlots }: SlotCalendarV2Props) {
     const [selectedDate, setSelectedDate] = useState<Date | null>(null);
 
-    const availableHours = [10, 11, 12, 13, 14, 15];
+    const availableHours = [10, 11, 12, 13, 14, 15, 16];
 
     // MEMOIZE DATES SO CALENDAR DOESN'T RE-RENDER AND COLLAPSE
     const { tomorrow, maxAllowedDate } = useMemo(() => {
@@ -82,7 +82,7 @@ export default function SlotCalendarV2({ slots, onChange, error, occupiedSlots }
                                         const now = new Date();
                                         const isPast = isBefore(slotDate, now);
                                         const diffHours = (slotDate.getTime() - now.getTime()) / (1000 * 60 * 60);
-                                        const isTooClose = diffHours < 24;
+                                        const isTooClose = diffHours < 12;
                                         const isOccupied = occupiedSlots.some(os => new Date(os).getTime() === slotDate.getTime());
                                         const isSelected = confirmedSlot === isoSlot;
                                         const isDisabled = isPast || isTooClose || isOccupied;
