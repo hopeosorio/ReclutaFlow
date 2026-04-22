@@ -15,8 +15,8 @@ interface SlotCalendarV2Props {
 export default function SlotCalendarV2({ slots, onChange, error, occupiedSlots }: SlotCalendarV2Props) {
     const [selectedDate, setSelectedDate] = useState<Date | null>(null);
 
-    const availableHours = [9, 10, 11, 12, 13, 14, 15, 16];
-    
+    const availableHours = [10, 11, 12, 13, 14, 15];
+
     // MEMOIZE DATES SO CALENDAR DOESN'T RE-RENDER AND COLLAPSE
     const { tomorrow, maxAllowedDate } = useMemo(() => {
         const today = startOfDay(new Date());
@@ -152,7 +152,7 @@ export default function SlotCalendarV2({ slots, onChange, error, occupiedSlots }
                         <div className="mb-8 p-6 mono color-dim flex-center"
                             style={{ border: '1px dashed var(--border-dim)', borderRadius: '12px', fontSize: '0.7rem', minHeight: '200px', flexDirection: 'column', textAlign: 'center', gap: '0.5rem' }}>
                             <span className="desktop-arrow">← SELECCIONA UN DÍA EN EL CALENDARIO</span>
-                            <span className="mobile-arrow">↑<br/>SELECCIONA UN DÍA EN EL CALENDARIO</span>
+                            <span className="mobile-arrow">↑<br />SELECCIONA UN DÍA EN EL CALENDARIO</span>
                         </div>
                     )}
                 </div>
