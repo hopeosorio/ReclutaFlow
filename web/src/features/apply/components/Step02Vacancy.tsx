@@ -58,7 +58,7 @@ export default function Step02Vacancy({ register, setValue, selectedJobId, jobPo
               <div className="detail-main">
                 {selectedJobProfile.role_summary && (
                   <div className="detail-section mb-6">
-                    <h4 className="mono color-dim mb-2">// OBJETIVO</h4>
+                    <h4 className="mono color-dim mb-2">// RESUMEN DEL ROL</h4>
                     <p style={{ fontSize: '0.9rem', lineHeight: '1.6', opacity: 0.8, whiteSpace: 'pre-line' }}>{selectedJobProfile.role_summary}</p>
                   </div>
                 )}
