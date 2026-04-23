@@ -1536,7 +1536,16 @@ export default function CrmApplicationDetail() {
                               </span>
                             </div>
                             {h.reason && (
-                              <p style={{ margin: '0.25rem 0 0', fontSize: '0.66rem', opacity: 0.6, lineHeight: 1.4 }}>{h.reason}</p>
+                              <p style={{ 
+                                margin: '0.25rem 0 0', 
+                                fontSize: '0.66rem', 
+                                opacity: 0.6, 
+                                lineHeight: 1.4,
+                                wordBreak: 'break-word',
+                                whiteSpace: 'pre-wrap'
+                              }}>
+                                {h.reason}
+                              </p>
                             )}
                           </div>
                         </div>
@@ -2037,7 +2046,7 @@ export default function CrmApplicationDetail() {
                 <div className="note-list" style={{ marginBottom: '2rem', display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
                   {notes.map(n => (
                     <div key={n.id} className="note-item" style={{ background: 'var(--bg-accent)', padding: '1.8rem', borderRadius: '20px', border: '1px solid var(--border-light)', position: 'relative' }}>
-                      <div style={{ fontSize: '0.9rem', lineHeight: '1.6', color: 'var(--text-main)' }} dangerouslySetInnerHTML={{ __html: n.note }} />
+                      <div style={{ fontSize: '0.9rem', lineHeight: '1.6', color: 'var(--text-main)', wordBreak: 'break-word', overflowWrap: 'anywhere' }} dangerouslySetInnerHTML={{ __html: n.note }} />
                       <div style={{ marginTop: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border-light)', paddingTop: '1rem' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: 0.6 }}>
                           <User size={12} />
