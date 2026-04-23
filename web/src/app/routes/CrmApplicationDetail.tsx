@@ -209,6 +209,14 @@ export default function CrmApplicationDetail() {
   const [showManualTransition, setShowManualTransition] = useState(false);
   const [sendingReminder, setSendingReminder] = useState(false);
 
+  const [inPersonForm, setInPersonForm] = useState({
+    scheduled_at: "",
+    location: "",
+    interviewer_id: "",
+    notes: "",
+  });
+  const [inPersonSaving, setInPersonSaving] = useState(false);
+
   // Document preview modal
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewName, setPreviewName] = useState("");
@@ -251,7 +259,15 @@ export default function CrmApplicationDetail() {
       nextStepText = 'REGISTRAR DICTAMEN DE EVALUACIÓN';
     } else if (s === 'virtual_done') {
       tabs = ['profile', 'interviews', 'notes'];
-      focus = 'ENTREVISTA COMPLETADA';
+      focus = 'ENTREVISTA VIRTUAL COMPLETADA';
+      nextStepText = 'AGENDAR REUNIÓN PRESENCIAL';
+    } else if (s === 'in_person_scheduled') {
+      tabs = ['profile', 'documents', 'notes'];
+      focus = 'REUNIÓN PRESENCIAL AGENDADA';
+      nextStepText = 'REGISTRAR DICTAMEN PRESENCIAL';
+    } else if (s === 'in_person_done') {
+      tabs = ['profile', 'interviews', 'notes'];
+      focus = 'ENTREVISTA PRESENCIAL COMPLETADA';
       nextStepText = 'REGISTRAR RESULTADO Y AVANZAR';
     } else if (s === 'documents_pending') {
       tabs = ['profile', 'documents', 'notes'];
@@ -469,7 +485,8 @@ export default function CrmApplicationDetail() {
     // Pre-fill result form with the first pending interview if any
     const pending = ivs.find((i: any) => i.result === 'pending');
     if (pending) {
-      setInterviewNotes(pending.notes || "");
+      // Si es presencial, NO precargamos las notas logísticas en el dictamen para mantenerlo limpio
+      setInterviewNotes(pending.interview_type === 'in_person' ? "" : (pending.notes || ""));
       setInterviewResult(pending.result || "pending");
     }
     setStatusHistory((historyRes?.data as any) ?? []);
@@ -565,7 +582,7 @@ export default function CrmApplicationDetail() {
     return true;
   };
 
-  const triggerStatusChange = async (newStatus: string, reason?: string, note?: string) => {
+  const triggerStatusChange = async (newStatus: string, reason?: string, note?: string, extraVariables: any = {}) => {
     // 1. Manejo especial de agendamiento (Selección de Slot)
     // 2. Ejecutar cambio de estatus CENTRALIZADO (Lógica de Oro)
     const { data: sessionData } = await supabase.auth.getSession();
@@ -584,7 +601,7 @@ export default function CrmApplicationDetail() {
         status_key: newStatus,
         reason: reason || null,
         note: note || null,
-        variables: { custom_note: note || "" },
+        variables: { custom_note: note || "", ...extraVariables },
       }),
     });
 
@@ -647,6 +664,11 @@ export default function CrmApplicationDetail() {
               body: JSON.stringify({ application_id: id, template_key: "documents_request" }),
             });
           }
+          if (resolvedStatus === 'in_person_scheduled') {
+            // El correo ya debería haber sido enviado por el Edge Function con las variables correctas
+            // No obstante, si necesitas un refuerzo manual, asegúrate de pasar las variables de la plantilla:
+            // Pero lo ideal es confiar en triggerStatusChange pasándole las variables directamente.
+          }
         }
       }
     } catch (err: any) {
@@ -670,11 +692,17 @@ export default function CrmApplicationDetail() {
 
       // 2. Ejecutar la transición de estatus según el resultado
       if (interviewResult === 'pass') {
-        // Aprobado: virtual_scheduled → virtual_done → documents_pending (automático)
-        await triggerStatusChange('virtual_done', 'REUNIÓN VIRTUAL: APROBADO', interviewNotes.trim());
-        await triggerStatusChange('documents_pending', 'Avance automático tras aprobación de reunión virtual', undefined);
+        if (application?.status_key === 'virtual_scheduled') {
+          // Aprobado Virtual: virtual_scheduled → virtual_done → in_person_scheduled (manual next)
+          await triggerStatusChange('virtual_done', 'REUNIÓN VIRTUAL: APROBADO', interviewNotes.trim());
+          // Note: We don't auto-transition to in_person_scheduled because we need to pick a date/time/location
+        } else if (application?.status_key === 'in_person_scheduled') {
+          // Aprobado Presencial: in_person_scheduled → in_person_done → documents_pending (automático)
+          await triggerStatusChange('in_person_done', 'REUNIÓN PRESENCIAL: APROBADO', interviewNotes.trim());
+          await triggerStatusChange('documents_pending', 'Avance automático tras aprobación de reunión presencial', undefined);
+        }
       } else if (interviewResult === 'fail') {
-        await triggerStatusChange('rejected', 'REUNIÓN VIRTUAL: NO APROBADO', interviewNotes.trim());
+        await triggerStatusChange('rejected', 'ENTREVISTA: NO APROBADO', interviewNotes.trim());
       }
 
       toast.success("Resultado de entrevista procesado con éxito.");
@@ -683,6 +711,47 @@ export default function CrmApplicationDetail() {
       toast.error(`Error al procesar resultado: ${err.message}`);
     }
     setInterviewSaving(false);
+  };
+
+  const handleInPersonSchedule = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!inPersonForm.scheduled_at) {
+      toast.error("La fecha y hora son obligatorias.");
+      return;
+    }
+    setInPersonSaving(true);
+    try {
+      // 1. Crear la entrevista presencial
+      const { error: ivError } = await supabase
+        .from("recruit_interviews")
+        .insert({
+          application_id: id,
+          interview_type: 'in_person',
+          scheduled_at: inPersonForm.scheduled_at,
+          location: inPersonForm.location,
+          interviewer_id: inPersonForm.interviewer_id || user?.id,
+          notes: inPersonForm.notes,
+          result: 'pending'
+        });
+
+      if (ivError) throw ivError;
+
+      // 2. Transicionar a in_person_scheduled enviando las variables de correo directamente
+      await triggerStatusChange('in_person_scheduled', 'Cita presencial agendada', undefined, {
+        name: application?.recruit_candidates?.recruit_persons?.first_name || "Candidato",
+        job_title: application?.recruit_job_postings?.title || "la vacante",
+        interview_date: inPersonForm.scheduled_at ? new Intl.DateTimeFormat('es-MX', { dateStyle: 'long', timeStyle: 'short', timeZone: 'America/Mexico_City' }).format(new Date(inPersonForm.scheduled_at)) : 'Pendiente',
+        location: inPersonForm.location || 'Oficinas',
+        interviewer_name: application?.profiles?.full_name || 'Personal de RH',
+        notes_text: inPersonForm.notes || 'Sin notas adicionales.'
+      });
+
+      toast.success("Cita presencial agendada y notificada.");
+      await loadData(true);
+    } catch (err: any) {
+      toast.error(`Error al agendar: ${err.message}`);
+    }
+    setInPersonSaving(false);
   };
 
   // --- GENERADOR DE HORARIOS DISPONIBLES ---
@@ -1295,13 +1364,23 @@ export default function CrmApplicationDetail() {
                     </button>
                   </div>
 
-                ) : application?.status_key === 'virtual_scheduled' ? (
+                ) : application?.status_key === 'virtual_scheduled' || application?.status_key === 'in_person_scheduled' ? (
                   <div style={{ display: 'flex', gap: '0.6rem' }}>
                     <button className="btn-magnetic" onClick={() => { setInterviewResult('pass'); setTimeout(() => document.getElementById('interview-signoff-panel')?.scrollIntoView({ behavior: 'smooth' }), 80); }} style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: 'var(--accent)', color: 'white', border: 'none', fontWeight: 900, borderRadius: '12px' }}>
                       ENTREVISTA APROBADA ✓
                     </button>
                     <button className="btn-magnetic" onClick={() => { setInterviewResult('fail'); setTimeout(() => document.getElementById('interview-signoff-panel')?.scrollIntoView({ behavior: 'smooth' }), 80); }} style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: 'rgba(239,68,68,0.05)', color: 'var(--danger)', border: '1px solid currentColor', fontWeight: 900, borderRadius: '12px' }}>
                       NO APROBADO
+                    </button>
+                  </div>
+
+                ) : application?.status_key === 'virtual_done' ? (
+                  <div style={{ display: 'flex', gap: '0.6rem' }}>
+                    <button className="btn-magnetic" onClick={() => { document.getElementById('in-person-scheduling-panel')?.scrollIntoView({ behavior: 'smooth' }); }} style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: 'var(--accent)', color: 'white', border: 'none', fontWeight: 900, borderRadius: '12px' }}>
+                      AGENDAR REUNIÓN PRESENCIAL ↓
+                    </button>
+                    <button className="btn-magnetic" onClick={() => { setActiveTab('profile'); setNextStatus('rejected'); setShowManualTransition(true); setTimeout(() => document.getElementById('status-transition-form')?.scrollIntoView({ behavior: 'smooth' }), 80); }} style={{ padding: '0.7rem 1.4rem', fontSize: '0.65rem', background: 'rgba(239,68,68,0.05)', color: 'var(--danger)', border: '1px solid currentColor', fontWeight: 900, borderRadius: '12px' }}>
+                      NO SELECCIONADO
                     </button>
                   </div>
 
@@ -1468,7 +1547,7 @@ export default function CrmApplicationDetail() {
               </div>
 
               {/* ─── INTERVIEW SIGN OFF PANEL ─── */}
-              {activeInterview && application?.status_key === 'virtual_scheduled' && (
+              {activeInterview && (application?.status_key === 'virtual_scheduled' || application?.status_key === 'in_person_scheduled') && (
                 <div id="interview-signoff-panel" className="reveal" style={{ marginBottom: '2rem' }}>
                   <div className="pro-card" style={{ border: '2px solid var(--accent)', background: 'linear-gradient(135deg, rgba(61, 90, 254, 0.06) 0%, rgba(61, 90, 254, 0.02) 100%)' }}>
 
@@ -1476,27 +1555,39 @@ export default function CrmApplicationDetail() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.8rem' }}>
                         <div style={{ padding: '0.7rem', background: 'var(--accent)', borderRadius: '12px', color: 'white', flexShrink: 0 }}>
-                          <Video size={20} />
+                          {application.status_key === 'virtual_scheduled' ? <Video size={20} /> : <MapPin size={20} />}
                         </div>
                         <div>
-                          <span className="mono" style={{ fontSize: '0.55rem', color: 'var(--accent)', fontWeight: 800 }}>// ENTREVISTA VIRTUAL AGENDADA</span>
+                          <span className="mono" style={{ fontSize: '0.55rem', color: 'var(--accent)', fontWeight: 800 }}>
+                            // {application.status_key === 'virtual_scheduled' ? 'ENTREVISTA VIRTUAL AGENDADA' : 'ENTREVISTA PRESENCIAL AGENDADA'}
+                          </span>
                           <h3 style={{ margin: '0.1rem 0 0', fontSize: '1.3rem' }}>{formatDateTime(activeInterview.scheduled_at)}</h3>
                         </div>
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.4rem' }}>
-                        {isMeetJoinable ? (
-                          <a href={application?.meet_link ?? '#'} target="_blank" rel="noreferrer" className="btn-magnetic" style={{ background: 'var(--accent)', color: 'white', padding: '0.7rem 1.4rem', fontWeight: 800, borderRadius: '12px', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.7rem', pointerEvents: application?.meet_link ? 'auto' : 'none', opacity: application?.meet_link ? 1 : 0.5 }}>
-                            <Video size={14} /> UNIRSE AHORA
-                          </a>
-                        ) : (
-                          <button disabled style={{ background: 'rgba(61,90,254,0.08)', color: 'var(--accent)', padding: '0.7rem 1.4rem', fontWeight: 800, borderRadius: '12px', border: '1px dashed var(--accent)', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.7rem', cursor: 'not-allowed', opacity: 0.5 }}>
-                            <Video size={14} /> UNIRSE AHORA
-                          </button>
+                        {application.status_key === 'virtual_scheduled' && (
+                          <>
+                            {isMeetJoinable ? (
+                              <a href={application?.meet_link ?? '#'} target="_blank" rel="noreferrer" className="btn-magnetic" style={{ background: 'var(--accent)', color: 'white', padding: '0.7rem 1.4rem', fontWeight: 800, borderRadius: '12px', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.7rem', pointerEvents: application?.meet_link ? 'auto' : 'none', opacity: application?.meet_link ? 1 : 0.5 }}>
+                                <Video size={14} /> UNIRSE AHORA
+                              </a>
+                            ) : (
+                              <button disabled style={{ background: 'rgba(61,90,254,0.08)', color: 'var(--accent)', padding: '0.7rem 1.4rem', fontWeight: 800, borderRadius: '12px', border: '1px dashed var(--accent)', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.7rem', cursor: 'not-allowed', opacity: 0.5 }}>
+                                <Video size={14} /> UNIRSE AHORA
+                              </button>
+                            )}
+                            {!isMeetJoinable && (
+                              <span className="mono" style={{ fontSize: '0.55rem', color: 'var(--warning)', display: 'flex', alignItems: 'center', gap: '0.3rem', fontWeight: 700 }}>
+                                <Clock size={10} /> SE HABILITA 30 MIN ANTES
+                              </span>
+                            )}
+                          </>
                         )}
-                        {!isMeetJoinable && (
-                          <span className="mono" style={{ fontSize: '0.55rem', color: 'var(--warning)', display: 'flex', alignItems: 'center', gap: '0.3rem', fontWeight: 700 }}>
-                            <Clock size={10} /> SE HABILITA 30 MIN ANTES
-                          </span>
+                        {application.status_key === 'in_person_scheduled' && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: 0.6 }}>
+                            <MapPin size={14} />
+                            <span className="mono" style={{ fontSize: '0.65rem', fontWeight: 700 }}>{activeInterview.location || 'Oficinas'}</span>
+                          </div>
                         )}
                       </div>
                     </div>
@@ -1521,6 +1612,70 @@ export default function CrmApplicationDetail() {
                         {interviewSaving ? 'GUARDANDO...' : 'CERRAR FASE DE ENTREVISTA'}
                       </button>
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ─── IN-PERSON INTERVIEW SCHEDULING PANEL ─── */}
+              {application?.status_key === 'virtual_done' && (
+                <div id="in-person-scheduling-panel" className="reveal" style={{ animationDelay: '0.2s', marginBottom: '2rem' }}>
+                  <div className="pro-card" style={{ border: `2px solid var(--accent)`, background: 'linear-gradient(135deg, rgba(61,90,254,0.05) 0%, rgba(61,90,254,0.02) 100%)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.8rem', marginBottom: '1.5rem' }}>
+                      <MapPin size={20} style={{ color: 'var(--accent)' }} />
+                      <div>
+                        <span className="mono" style={{ fontSize: '0.55rem', fontWeight: 800, color: 'var(--accent)' }}>// ACCIÓN REQUERIDA</span>
+                        <h3 style={{ margin: '0.1rem 0 0', fontSize: '1.1rem' }}>AGENDAR REUNIÓN PRESENCIAL</h3>
+                      </div>
+                    </div>
+
+                    <form onSubmit={handleInPersonSchedule} className="form-stack">
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.2rem' }}>
+                        <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>FECHA Y HORA *
+                          <input
+                            type="datetime-local"
+                            className="input"
+                            value={inPersonForm.scheduled_at}
+                            onChange={e => setInPersonForm(p => ({ ...p, scheduled_at: e.target.value }))}
+                            style={{ marginTop: '0.5rem' }}
+                            required
+                          />
+                        </label>
+                        <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>UBICACIÓN / SUCURSAL *
+                          <input
+                            className="input"
+                            placeholder="Ej: Sucursal Centro, Planta Alta"
+                            value={inPersonForm.location}
+                            onChange={e => setInPersonForm(p => ({ ...p, location: e.target.value }))}
+                            style={{ marginTop: '0.5rem' }}
+                            required
+                          />
+                        </label>
+                        <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>ENTREVISTADOR *
+                          <select
+                            className="input"
+                            value={inPersonForm.interviewer_id}
+                            onChange={e => setInPersonForm(p => ({ ...p, interviewer_id: e.target.value }))}
+                            style={{ marginTop: '0.5rem' }}
+                            required
+                          >
+                            <option value="">— Seleccionar entrevistador —</option>
+                            <option value={application.assigned_to || ""}>{application.profiles?.full_name || "Reclutador Asignado"}</option>
+                          </select>
+                        </label>
+                        <label style={{ fontSize: '0.6rem', fontWeight: 800 }}>NOTAS / INDICACIONES
+                          <input
+                            className="input"
+                            placeholder="Vestimenta, documentos, parking..."
+                            value={inPersonForm.notes}
+                            onChange={e => setInPersonForm(p => ({ ...p, notes: e.target.value }))}
+                            style={{ marginTop: '0.5rem' }}
+                          />
+                        </label>
+                      </div>
+                      <button type="submit" className="btn-primary" disabled={inPersonSaving} style={{ padding: '1.1rem', width: '100%', fontWeight: 800, marginTop: '1.5rem', letterSpacing: '0.05em' }}>
+                        {inPersonSaving ? 'AGENDANDO...' : 'CONFIRMAR CITA Y NOTIFICAR AL CANDIDATO'}
+                      </button>
+                    </form>
                   </div>
                 </div>
               )}

@@ -26,9 +26,11 @@ interface JobRow { id: string; title: string }
 
 // ── Grupos de fase para el filtro del pipeline ─────────────────────────────────
 const STATUS_GROUPS: { label: string; keys: string[] }[] = [
+  { label: 'En Proceso',     keys: ['new','validation','virtual_scheduled','virtual_done','in_person_scheduled','in_person_done','documents_pending','documents_complete','onboarding','onboarding_scheduled'] },
   { label: 'Nuevos',        keys: ['new'] },
   { label: 'Validación',    keys: ['validation'] },
-  { label: 'Entrevista',    keys: ['virtual_scheduled','virtual_done'] },
+  { label: 'Entrevista Virtual', keys: ['virtual_scheduled','virtual_done'] },
+  { label: 'Entrevista Presencial', keys: ['in_person_scheduled','in_person_done'] },
   { label: 'Documentación', keys: ['documents_pending','documents_complete'] },
   { label: 'Onboarding',    keys: ['onboarding','onboarding_scheduled'] },
   { label: 'Contratado',     keys: ['hired'] },
@@ -46,8 +48,8 @@ function avatarColor(name: string) {
 
 function statusColor(category: string, key: string) {
   if (key === 'rejected') return '#ef4444';
-  if (['hired','virtual_done'].includes(key)) return '#22c55e';
-  if (category === 'interview' || key === 'virtual_scheduled') return '#8b5cf6';
+  if (['hired','virtual_done','in_person_done'].includes(key)) return '#22c55e';
+  if (category === 'interview' || ['virtual_scheduled','in_person_scheduled'].includes(key)) return '#8b5cf6';
   if (['onboarding','onboarding_scheduled'].includes(key)) return '#f59e0b';
   return 'var(--accent)';
 }
@@ -69,7 +71,7 @@ export default function CrmDashboard() {
   const [jobs, setJobs] = useState<JobRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState("Nuevos");
+  const [statusFilter, setStatusFilter] = useState("En Proceso");
   const [jobFilter, setJobFilter] = useState("");
   const [recruiterFilter, setRecruiterFilter] = useState("");
   const [search, setSearch] = useState("");

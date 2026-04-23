@@ -86,10 +86,22 @@ const friendlyStatusMap: Record<string, { label: string; icon: any; color: strin
         desc: "¡Felicidades! Tienes una entrevista virtual agendada. Revisa los detalles de conexión en el correo que se ha enviado a tu correo electrónico."
     },
     virtual_done: {
-        label: "ENTREVISTA COMPLETADA",
+        label: "ENTREVISTA VIRTUAL LISTA",
         icon: Check,
         color: "#10b981",
-        desc: "Has completado tu entrevista con éxito. Estamos evaluando los resultados finales."
+        desc: "Has completado tu entrevista virtual con éxito. El equipo de RH revisará tu perfil para agendar una cita presencial."
+    },
+    in_person_scheduled: {
+        label: "ENTREVISTA PRESENCIAL",
+        icon: UserCheck,
+        color: "#6366f1",
+        desc: "¡Felicidades! Has sido seleccionado para una entrevista presencial en nuestras oficinas. Revisa los detalles de ubicación y horario a continuación."
+    },
+    in_person_done: {
+        label: "ENTREVISTA COMPLETADA",
+        icon: CheckCircle2,
+        color: "#10b981",
+        desc: "Has completado tu entrevista presencial. Estamos evaluando los resultados finales para proceder con tu documentación."
     },
     final_docs: {
         label: "DOCUMENTACIÓN FINAL",
@@ -137,7 +149,7 @@ const friendlyStatusMap: Record<string, { label: string; icon: any; color: strin
 
 const STAGES = [
     { key: 'validation', label: 'Validación', codes: ['new', 'validation', 'docs_validation', 'virtual_pending'] },
-    { key: 'interview', label: 'Entrevista', codes: ['virtual_scheduled', 'virtual_done'] },
+    { key: 'interview', label: 'Entrevista', codes: ['virtual_scheduled', 'virtual_done', 'in_person_scheduled', 'in_person_done'] },
     { key: 'documentation', label: 'Documentación', codes: ['documents_pending', 'documents_complete', 'final_docs'] },
     { key: 'onboarding', label: 'Ingreso', codes: ['onboarding', 'onboarding_scheduled', 'hired'] }
 ];
@@ -173,7 +185,8 @@ export default function TrackApplication() {
                   recruit_job_postings(title),
                   recruit_candidates(
                     recruit_persons(first_name, last_name)
-                  )
+                  ),
+                  recruit_interviews(scheduled_at, location, notes, interview_type)
                 `)
                 .eq("id", loadId)
                 .single();
@@ -607,12 +620,58 @@ export default function TrackApplication() {
                                     boxShadow: '0 4px 15px rgba(var(--accent-rgb), 0.15)'
                                 }}>
                                     <div>
-                                        <h3 className="outfit-bold" style={{ fontSize: '1.1rem', marginBottom: '0.25rem', color: 'var(--text-main)' }}>ENTREVISTA EN CURSO / PROGRAMADA</h3>
+                                        <h3 className="outfit-bold" style={{ fontSize: '1.1rem', marginBottom: '0.25rem', color: 'var(--text-main)' }}>ENTREVISTA VIRTUAL PROGRAMADA</h3>
                                         <p className="mono color-dim" style={{ fontSize: '0.65rem' }}>PUNTUALIDAD Y CONEXIÓN ESTABLE REQUERIDA.</p>
                                     </div>
                                     <a href={application.meet_link} target="_blank" rel="noreferrer" className="btn-magnetic" style={{ padding: '1.2rem 2.5rem', borderRadius: '16px', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                                         <Video size={18} /> UNIRSE AHORA <ExternalLink size={14} />
                                     </a>
+                                </div>
+                            )}
+
+                            {application?.status_key === 'in_person_scheduled' && (
+                                <div className="track-meet-card" style={{
+                                    marginTop: '3rem',
+                                    padding: '2.5rem',
+                                    borderRadius: '24px',
+                                    background: 'rgba(var(--accent-rgb), 0.1)',
+                                    border: '1px solid var(--accent)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'space-between',
+                                    gap: '2rem',
+                                    boxShadow: '0 4px 15px rgba(var(--accent-rgb), 0.15)'
+                                }}>
+                                    <div style={{ flex: 1 }}>
+                                        <h3 className="outfit-bold" style={{ fontSize: '1.1rem', marginBottom: '0.25rem', color: 'var(--text-main)' }}>ENTREVISTA PRESENCIAL</h3>
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '1rem' }}>
+                                            <div>
+                                                <span className="mono color-dim" style={{ fontSize: '0.55rem', fontWeight: 800 }}>FECHA Y HORA</span>
+                                                <p style={{ margin: 0, fontWeight: 700 }}>
+                                                    {(application as any).recruit_interviews?.find((i: any) => i.interview_type === 'in_person')?.scheduled_at 
+                                                        ? new Intl.DateTimeFormat('es-MX', { dateStyle: 'long', timeStyle: 'short', timeZone: 'America/Mexico_City' }).format(new Date((application as any).recruit_interviews.find((i: any) => i.interview_type === 'in_person').scheduled_at)) 
+                                                        : 'POR CONFIRMAR'}
+                                                </p>
+                                            </div>
+                                            <div>
+                                                <span className="mono color-dim" style={{ fontSize: '0.55rem', fontWeight: 800 }}>UBICACIÓN</span>
+                                                <p style={{ margin: 0, fontWeight: 700 }}>
+                                                    {(application as any).recruit_interviews?.find((i: any) => i.interview_type === 'in_person')?.location || 'NUESTRAS OFICINAS'}
+                                                </p>
+                                            </div>
+                                        </div>
+                                        {(application as any).recruit_interviews?.find((i: any) => i.interview_type === 'in_person')?.notes && (
+                                            <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid rgba(var(--accent-rgb), 0.2)' }}>
+                                                <span className="mono color-dim" style={{ fontSize: '0.55rem', fontWeight: 800 }}>NOTAS</span>
+                                                <p style={{ margin: 0, fontSize: '0.75rem', opacity: 0.8 }}>{(application as any).recruit_interviews.find((i: any) => i.interview_type === 'in_person').notes}</p>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                                        <div style={{ background: 'var(--accent)', color: 'white', padding: '1rem', borderRadius: '12px', textAlign: 'center' }}>
+                                            <UserCheck size={24} />
+                                        </div>
+                                    </div>
                                 </div>
                             )}
 
