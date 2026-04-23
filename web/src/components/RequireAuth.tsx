@@ -10,7 +10,7 @@ interface RequireAuthProps {
 export default function RequireAuth({ roles }: RequireAuthProps) {
   const { session, profile, loading, error } = useAuth();
 
-  if (loading) {
+  if (loading && !profile) {
     return null;
   }
 

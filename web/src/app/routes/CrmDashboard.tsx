@@ -129,7 +129,7 @@ export default function CrmDashboard() {
     };
     load();
     return () => { active = false; };
-  }, [profile]);
+  }, [profile?.id]);
 
   // Realtime
   useEffect(() => {

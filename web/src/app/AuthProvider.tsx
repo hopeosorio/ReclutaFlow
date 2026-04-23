@@ -77,30 +77,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     init();
 
     const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      const currentUser = session?.user?.id;
+      const newUser = nextSession?.user?.id;
+
       setSession(nextSession);
+
       if (!nextSession?.user) {
         setProfile(null);
+        setLoading(false);
         return;
       }
 
-      // TOKEN_REFRESHED solo actualiza el token — no necesita re-fetch del perfil ni loading
+      // Si el usuario es el mismo y ya tenemos perfil, no activamos el loading global
+      // para evitar parpadeos al recuperar el foco de la ventana.
+      if (currentUser === newUser && profile) {
+        setLoading(false);
+        return;
+      }
+
       if (event === 'TOKEN_REFRESHED') return;
 
       setLoading(true);
-      setTimeout(() => {
-        if (!active) return;
-        fetchProfile(nextSession.user.id)
-          .then((dataProfile) => {
-            if (active) setProfile(dataProfile);
-          })
-          .catch((err) => {
-            const message = err instanceof Error ? err.message : "Error desconocido";
-            if (active) setError(`No se pudo actualizar la sesión: ${message}`);
-          })
-          .finally(() => {
-            if (active) setLoading(false);
-          });
-      }, 0);
+      fetchProfile(nextSession.user.id)
+        .then((dataProfile) => {
+          if (active) setProfile(dataProfile);
+        })
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : "Error desconocido";
+          if (active) setError(`No se pudo actualizar la sesión: ${message}`);
+        })
+        .finally(() => {
+          if (active) setLoading(false);
+        });
     });
 
     return () => {

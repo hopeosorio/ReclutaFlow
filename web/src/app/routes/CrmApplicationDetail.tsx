@@ -520,7 +520,7 @@ export default function CrmApplicationDetail() {
 
 
     setLoading(false);
-  }, [id, profile?.role]);
+  }, [id, profile?.id]);
 
   useEffect(() => {
     loadData();
