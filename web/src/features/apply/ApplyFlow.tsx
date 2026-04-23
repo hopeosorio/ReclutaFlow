@@ -201,6 +201,25 @@ export default function ApplyFlow() {
         return false;
       }
 
+      // --- DUPLICATE CHECK ---
+      const email = getValues("person.email");
+      if (email && selectedJobId) {
+        // Usamos una función RPC segura para saltar las restricciones de RLS 
+        // y verificar si el correo ya tiene una postulación activa.
+        const { data: isDuplicate, error: rpcError } = await supabase
+          .rpc('check_duplicate_application', { 
+            p_email: email, 
+            p_job_id: selectedJobId 
+          });
+
+        if (rpcError) {
+          console.error("Error validando duplicados:", rpcError);
+        } else if (isDuplicate) {
+          setStepError("Ya tienes una postulación activa para esta vacante. No es necesario postularte de nuevo.");
+          return false;
+        }
+      }
+
       const missingQ = questions.filter(q => q.is_required && !getValues(`screening_answers.${q.id}`));
       if (missingQ.length > 0) {
         missingQ.forEach(q => setError(`screening_answers.${q.id}` as any, { type: "required", message: "Campo obligatorio" }));
